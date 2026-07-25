@@ -51,7 +51,7 @@ async def get_logs(lines: int = Query(100, ge=10, le=500)):
 @router.get("/graph/data")
 async def get_graph_data(
     namespace: str = Query("global"),
-    limit: int = Query(150, le=500),
+    limit: int = Query(500, le=2000),
     version: int = Query(1),
     file: str = Query(None),
     graph_store=Depends(get_graph_store)

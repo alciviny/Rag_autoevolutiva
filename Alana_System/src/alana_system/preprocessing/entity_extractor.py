@@ -74,8 +74,8 @@ class EntityExtractor:
 
         try:
             resposta_bruta = await self.llm.generate_answer(
-                messages=messages, 
-                metadata={"force_json": True}
+                messages=messages,
+                metadata={"force_json": True, "deep_mode": mode == "deep"}
             )
             
             data = self._safe_json_load(resposta_bruta)
@@ -293,21 +293,67 @@ FORMATO DE SAÍDA (Apenas JSON puro):
         return False
 
     def _safe_json_load(self, text: str) -> Dict[str, Any]:
-        """Extrai e valida JSON da resposta da IA."""
-        try:
-            # Localiza o bloco JSON
-            start = text.find('{')
-            end = text.rfind('}') + 1
-            if start == -1 or end == -1:
-                return {}
-                
-            json_str = text[start:end]
-            
-            # Reparo básico: Remove vírgulas extras antes de fechamento de chaves/colchetes
-            json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
-            
-            return json.loads(json_str)
-        except Exception as e:
-            logger.warning(f"⚠️ Falha ao decodificar JSON da IA: {e}")
+        """
+        Extrai e valida JSON da resposta da IA com recuperação parcial eficiente.
+
+        Quando o modelo trunca a resposta (ex: Gemma em modo profundo excede max_tokens),
+        em vez de zerar tudo, localiza o último objeto JSON completo dentro de cada array
+        e salva o que foi gerado até ali. Complexidade O(n).
+        """
+        if not text:
             return {}
+
+        start = text.find('{')
+        if start == -1:
+            return {}
+
+        end = text.rfind('}') + 1
+        json_str = text[start:end] if end > start else text[start:]
+
+        # Reparo básico: remove vírgulas extras antes de fechamento
+        json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
+
+        # Tentativa 1: JSON completo e válido (caminho feliz)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        # Tentativa 2: Recuperação Parcial O(n)
+        # Para cada chave, delimita o segmento de texto apenas do seu array
+        # e localiza o último objeto JSON completo dentro desse segmento.
+        def recover_array(full_text: str, key: str) -> list:
+            match = re.search(rf'"{key}"\s*:\s*\[', full_text)
+            if not match:
+                return []
+
+            arr_start = match.end() - 1  # posição do '['
+
+            # Determina o fim do segmento: início da próxima chave de array
+            # para não vazar o rfind('}') para outros arrays
+            next_key = re.search(r'"\w+"\s*:\s*\[', full_text[match.end():])
+            arr_end = match.end() + next_key.start() if next_key else len(full_text)
+
+            segment = full_text[arr_start:arr_end]
+            last_obj_end = segment.rfind('}')
+            if last_obj_end == -1:
+                return []
+
+            candidate = segment[:last_obj_end + 1].rstrip().rstrip(',') + ']'
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                return []
+
+        entities = recover_array(json_str, "entities")
+        relations = recover_array(json_str, "relations")
+
+        if entities or relations:
+            logger.warning(
+                f"⚠️ JSON truncado pela IA — recuperação parcial: "
+                f"{len(entities)} entidades, {len(relations)} relações salvas."
+            )
+            return {"entities": entities, "relations": relations}
+
+        logger.warning("⚠️ Falha ao decodificar JSON da IA: resposta irrecuperável.")
         return {}

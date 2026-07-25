@@ -117,10 +117,11 @@ class LLMEngine:
             messages.insert(0, {"role": "system", "content": system_prompt})
 
         kwargs = {
-            "model": "alana-core", # O Router decide qual IA usar
+            "model": "alana-core",
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 4096,
+            # Modo profundo exige mais tokens para não truncar o JSON de 80+ entidades
+            "max_tokens": 8192 if (metadata and metadata.get("deep_mode")) else 4096,
             "timeout": int(os.getenv("LLM_TIMEOUT", "300"))
         }
 
