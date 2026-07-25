@@ -6,6 +6,7 @@ from typing import Optional
 
 # Importando o Transcritor industrial (sem prefixo src)
 from alana_system.ingestion.audio_transcriber import AudioTranscriber
+from alana_system.core.resources import gatekeeper
 
 logger = logging.getLogger("alana.iot.voice")
 
@@ -32,8 +33,10 @@ class VoiceProcessor:
                 
             logger.info("🎤 [Voice] Iniciando transcricao assincrona...")
             
-            # Executa a transcricao pesada em uma thread separada para manter a API responsiva
-            pages = await asyncio.to_thread(self.transcriber.transcribe, temp_path)
+            # Proteção de Hardware: Aguarda disponibilidade da GPU/Thread
+            async with gatekeeper.get_semaphore():
+                # Executa a transcricao pesada em uma thread separada para manter a API responsiva
+                pages = await asyncio.to_thread(self.transcriber.transcribe, temp_path)
             
             full_text = " ".join([page.text for page in pages]).strip()
             return full_text

@@ -1,11 +1,13 @@
 import json
 import logging
 import asyncio
-from typing import List, Dict, Callable, Any
+from typing import List, Dict, Callable, Any, Optional
 
 from ...inference.llm_engine import LLMEngine
 from .tool_registry import ToolRegistry
 from .blackboard import MissionBlackboard
+from .dynamic_manager import DynamicToolManager
+from ...iot.hal import hal
 
 logger = logging.getLogger("alana.agent.engine")
 
@@ -34,10 +36,10 @@ class AgentEngine:
 
         self.llm = llm or LLMEngine()
         self.max_loops = 30 # Protecao contra loops infinitos
-        self.blackboard = MissionBlackboard()
         self.event_callbacks: List[Callable] = []
         self.registry = ToolRegistry()
         self.dynamic_manager = dynamic_manager or DynamicToolManager()
+        self.blackboard = MissionBlackboard("global")
         
         # Registro de ferramentas industriais
         self.registry.register(WriteCodeTool())
@@ -76,7 +78,21 @@ class AgentEngine:
         logger.info(f"🚀 INICIANDO MISSÃO INDUSTRIAL [{namespace}]: {mission}")
         await emit("mission_start", {"description": mission, "namespace": namespace})
         
-        # Carrega ferramentas dinâmicas do namespace (Tool Maker)
+        # 1. Limpeza Industrial (GC)
+        self.dynamic_manager.run_garbage_collection(namespace)
+        
+        # 2. Inicializa Blackboard com persistência baseada no namespace
+        self.blackboard = MissionBlackboard(namespace)
+        
+        # 3. Verificação de Saúde de Hardware (Proatividade IoT)
+        hw_status = hal.get_device_status()
+        offline_devices = [d["id"] for d in hw_status if d["status"] == "OFFLINE"]
+        if offline_devices:
+            alert = f"⚠️ ALERTA DE HARDWARE: Os dispositivos {offline_devices} estão OFFLINE. Considere isso no seu plano."
+            self.blackboard.add_note("hw_alert", alert)
+            logger.warning(alert)
+
+        # 4. Carrega ferramentas dinâmicas do namespace (Tool Maker)
         dynamic_tools = self.dynamic_manager.load_tools_for_namespace(namespace)
         for d_tool in dynamic_tools:
             self.registry.register(d_tool)
@@ -201,44 +217,54 @@ FORMATO OBRIGATÓRIO (JSON):
 
     async def _manage_context(self, messages: List[Dict]) -> List[Dict]:
         """
-        Gestão de Contexto Inteligente (Higiene de Memória).
-        Se o contexto exceder o limite, condensa o histórico para não perder progresso.
+        Gestão de Contexto Inteligente Baseada em Tokens (Higiene Industrial).
+        Se o total de tokens exceder 70% da janela, condensa o histórico.
         """
-        if len(messages) <= 20: 
+        # Concatena todo o conteúdo para cálculo de tokens
+        full_text = "".join([m["content"] for m in messages if "content" in m])
+        total_tokens = self.llm.get_token_count(full_text)
+        
+        # Gatilho: 70% da janela (8192 * 0.7 ~= 5734 tokens)
+        threshold = int(self.llm.context_window * 0.7)
+        
+        if total_tokens < threshold:
             return messages
 
-        logger.info("🧠 Gerenciando contexto: Condensando histórico de missão...")
+        logger.info(f"🧠 Contexto saturado ({total_tokens} tokens): Iniciando compressão industrial...")
         
         # Mantém System Prompt e Objetivo Original
         system_msg = messages[0]
         objective_msg = messages[1]
         
-        # As últimas 6 mensagens são mantidas como "Memória de Curto Prazo" (Short-term)
-        recent_messages = messages[-6:]
+        # Mantém as últimas 4 mensagens intactas (Memória de Curtíssimo Prazo)
+        recent_messages = messages[-4:]
         
-        # As mensagens intermediárias são sumarizadas (Mid-term memory)
-        intermediate = messages[2:-6]
-        summary_payload = "\n".join([f"[{m['role'].upper()}]: {m['content'][:300]}..." for m in intermediate])
+        # Mensagens intermediárias para sumarização
+        intermediate = messages[2:-4]
+        summary_payload = "\n".join([f"[{m['role'].upper()}]: {m['content'][:500]}..." for m in intermediate])
         
         summary_prompt = (
-            "Resuma de forma extremamente técnica e concisa o progresso feito até agora nesta missão. "
-            "Foque em: descobertas feitas, ferramentas usadas com sucesso e o que ainda falta."
+            "Você é o Módulo de Memória da Alana. Resuma tecnicamente o progresso desta missão até agora. "
+            "Foque em fatos descobertos, sucessos de ferramentas e o estado atual do problema."
         )
         
         try:
             summary = await self.llm.generate_answer( 
                 messages=[
                     {"role": "system", "content": summary_prompt},
-                    {"role": "user", "content": f"HISTÓRICO:\n{summary_payload}"}
+                    {"role": "user", "content": f"HISTÓRICO PARA COMPRESSÃO:\n{summary_payload}"}
                 ]
             )
             
             summary_msg = {
                 "role": "system", 
-                "content": f"RESUMO DO PROGRESSO ANTERIOR: {summary}"
+                "content": f"RESUMO DO PROGRESSO (COMPRESSÃO): {summary}"
             }
             
             return [system_msg, objective_msg, summary_msg] + recent_messages
         except Exception as e:
-            logger.error(f"Falha ao sumarizar contexto: {e}. Usando fallback de corte.")
-            return messages[:2] + messages[-10:]
+            logger.error(f"Falha ao sumarizar contexto: {e}. Usando corte de segurança.")
+            return [system_msg, objective_msg] + messages[-8:]
+    async def think(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """Delega o raciocínio para o motor de LLM interno do agente."""
+        return await self.llm.think(prompt, system_prompt=system_prompt)

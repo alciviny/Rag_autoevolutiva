@@ -27,8 +27,25 @@ class ExperienceStore:
         self.embedder = embedder
         self._init_db()
 
+    def _connect(self):
+        """Cria uma conexao robusta para a Memória Episódica."""
+        import time
+        for attempt in range(5):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=30000;")
+                return conn
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower() and attempt < 4:
+                    time.sleep(0.5)
+                    continue
+                raise
+
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS experiences (
@@ -59,7 +76,7 @@ class ExperienceStore:
         
         try:
             # 1. Persistência no SQLite
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO experiences (id, mission_name, task_description, winning_strategy, code_snippets, related_entities, namespace)
@@ -110,8 +127,7 @@ class ExperienceStore:
                 return []
 
             # 2. Recupera detalhes do SQLite
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with self._connect() as conn:
                 cursor = conn.cursor()
                 placeholders = ','.join(['?'] * len(exp_ids))
                 cursor.execute(f"SELECT * FROM experiences WHERE id IN ({placeholders}) AND namespace = ?", (*exp_ids, namespace))
@@ -128,8 +144,7 @@ class ExperienceStore:
         words = [f"%{w.strip()}%" for w in query.split() if len(w) > 3]
         if not words: words = [f"%{query}%"]
 
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             clauses = " OR ".join(["task_description LIKE ?" for _ in words])

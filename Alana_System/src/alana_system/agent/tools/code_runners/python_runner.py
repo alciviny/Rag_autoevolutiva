@@ -7,7 +7,41 @@ import shutil
 from pathlib import Path
 from ..base_tool import BaseTool
 
+import ast
+
 logger = logging.getLogger(__name__)
+
+class PythonSecurityAuditor(ast.NodeVisitor):
+    """
+    Analisa o Abstract Syntax Tree (AST) para detectar operacoes proibidas.
+    """
+    BANNED_MODULES = {"os", "subprocess", "shutil", "sys", "socket", "requests", "urllib", "pntctl", "ctypes", "importlib"}
+    BANNED_FUNCTIONS = {"eval", "exec", "open", "getattr", "setattr", "delattr", "input", "__import__", "globals", "locals", "vars", "compile"}
+    BANNED_ATTRIBUTES = {
+        "system", "popen", "spawn", "execute", "rmtree", "run", "call", "remove",
+        "open", "write_text", "write_bytes", "read_text", "read_bytes"
+    }
+
+    def __init__(self):
+        self.errors = []
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.name in self.BANNED_MODULES or any(alias.name.startswith(m + ".") for m in self.BANNED_MODULES):
+                self.errors.append(f"Importacao proibida: {alias.name}")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module in self.BANNED_MODULES or any(node.module.startswith(m + ".") for m in self.BANNED_MODULES):
+            self.errors.append(f"Importacao proibida de: {node.module}")
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id in self.BANNED_FUNCTIONS:
+            self.errors.append(f"Chamada de funcao proibida: {node.func.id}")
+        if isinstance(node.func, ast.Attribute) and node.func.attr in self.BANNED_ATTRIBUTES:
+            self.errors.append(f"Chamada de atributo proibida: {node.func.attr}")
+        self.generic_visit(node)
 
 class PythonRunnerTool(BaseTool):
     name = "python_runner"
@@ -30,11 +64,22 @@ class PythonRunnerTool(BaseTool):
         artifacts_dir = Path("data/artifacts")
         artifacts_dir.mkdir(parents=True, exist_ok=True)
             
-        # Validação de Protocolo de Segurança (Regra 7)
+        # Validação de Protocolo de Segurança Industrial (Auditoria AST)
         with open(file_path, "r") as f:
             code_content = f.read()
-            if "plt.show()" in code_content:
-                return "[ERRO DE PROTOCOLO] Violação da Regra 7: O comando 'plt.show()' é proibido. Use 'alana_lab' ou 'plt.savefig' para salvar artefatos em 'data/artifacts/'."
+            
+            try:
+                tree = ast.parse(code_content)
+                auditor = PythonSecurityAuditor()
+                auditor.visit(tree)
+                
+                if auditor.errors:
+                    return f"[VIOLAÇÃO DE SEGURANÇA] O código foi bloqueado pelos seguintes motivos:\n" + "\n".join([f"- {e}" for e in auditor.errors])
+                
+                if "plt.show()" in code_content:
+                    return "[ERRO DE PROTOCOLO] Violação da Regra 7: O comando 'plt.show()' é proibido. Use 'plt.savefig' para salvar em 'data/artifacts/'."
+            except SyntaxError as se:
+                return f"[ERRO DE SINTAXE] O código gerado é inválido: {str(se)}"
             
         
         # ID único para esta execução

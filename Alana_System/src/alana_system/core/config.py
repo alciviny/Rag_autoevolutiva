@@ -14,6 +14,8 @@ LOG_FILE = BASE_DIR / "alana.log"
 
 # Configuração de Logging Centralizada
 def setup_logging():
+    from alana_system.utils.logging_context import TraceIDFilter
+    
     # Mantém 5 backups de 10MB cada
     handler = RotatingFileHandler(
         LOG_FILE, 
@@ -29,8 +31,12 @@ def setup_logging():
             handler,
             logging.StreamHandler()
         ],
-        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+        format="%(asctime)s [%(levelname)s] [%(trace_id)s] %(name)s - %(message)s"
     )
+
+    # Injeta o Trace ID em todos os registros
+    for h in logging.root.handlers:
+        h.addFilter(TraceIDFilter())
 
     # SILENCIAMENTO DE VERBOSIDADE (Auditoria de Elite)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -49,5 +55,8 @@ APP_DESCRIPTION = "Sistema de Engenharia Autônoma e RAG Multimodal"
 
 # Configurações de Modelos (Defaults)
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "ollama/llama3.1")
+VISION_MODEL_CLOUD = os.getenv("VISION_MODEL_CLOUD", "gemini/gemini-2.0-flash")
+VISION_MODEL_LOCAL = os.getenv("VISION_MODEL_LOCAL", "ollama/moondream")
+SOVEREIGN_MODE = os.getenv("SOVEREIGN_MODE", "true").lower() == "true" # Força uso local se true
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 EMBEDDER_DEVICE = os.getenv("EMBEDDER_DEVICE", "cpu")

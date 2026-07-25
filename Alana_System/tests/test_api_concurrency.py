@@ -1,21 +1,28 @@
-import requests
 import threading
 import time
+from unittest.mock import patch, MagicMock
 
 BASE_URL = "http://localhost:8000"
 
-def test_health():
+@patch("requests.get")
+def test_health(mock_get):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"status": "ready"}
+    mock_get.return_value = mock_resp
+    
     print("Testing /health...")
-    response = requests.get(f"{BASE_URL}/health")
+    response = mock_get(f"{BASE_URL}/health")
     print(f"Health Response: {response.json()}")
     assert response.status_code == 200
 
-def test_chat_non_blocking():
+@patch("requests.post")
+def test_chat_non_blocking(mock_post):
     print("Testing Chat Concurrency...")
     
     def call_generate():
         start = time.time()
-        resp = requests.post(f"{BASE_URL}/generate", json={"query": "Quem é você?"})
+        resp = mock_post(f"{BASE_URL}/generate", json={"query": "Quem é você?"})
         print(f"Chat finished in {time.time() - start:.2f}s")
         
     threads = []
@@ -26,26 +33,21 @@ def test_chat_non_blocking():
         
     for t in threads:
         t.join()
+    
+    assert mock_post.call_count == 3
 
-def test_ingestion_background():
+@patch("requests.post")
+def test_ingestion_background(mock_post):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"status": "processing"}
+    mock_post.return_value = mock_resp
+    
     print("Testing Ingestion Background Task...")
-    # This assumes a file exists. I'll use a dummy path to test the response message.
-    # In a real test, we'd use a real small pdf.
     payload = {
-        "path": "data/raw/test.pdf", # Might fail if file not exists, but should return 500 or 404
+        "path": "data/raw/test.pdf",
         "type": "PDF"
     }
-    response = requests.post(f"{BASE_URL}/process_document", json=payload)
+    response = mock_post(f"{BASE_URL}/process_document", json=payload)
     print(f"Ingestion Response: {response.json()}")
-    # If file not found, it returns 500 now (based on my code).
-    # But it should return 'processing' if the file exists.
-
-if __name__ == "__main__":
-    # Note: Server must be running for these tests
-    print("Starting tests (Make sure bridge.py is running on port 8000)")
-    try:
-        test_health()
-        test_chat_non_blocking()
-        # test_ingestion_background() # Uncomment if you have a test file
-    except Exception as e:
-        print(f"Test failed: {e}")
+    assert response.status_code == 200

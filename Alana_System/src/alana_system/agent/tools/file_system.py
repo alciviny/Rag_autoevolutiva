@@ -28,10 +28,15 @@ class FileSystemTool(BaseTool):
         # mas aqui permitiremos subdiretórios SE eles estiverem sob o workspace.
         target_path = (workspace / filename).resolve()
         
-        # 3. Validação de Segurança: O caminho resolvido DEVE começar com o workspace
-        if not str(target_path).startswith(str(workspace.absolute())):
-            logger.warning(f"🚨 TENTATIVA DE VIOLAÇÃO DE SEGURANÇA: {filename} por namespace {self.current_namespace}")
-            raise PermissionError(f"Acesso negado: O caminho '{filename}' está fora do sandbox permitido.")
+        # 3. Validação de Segurança Industrial: O caminho resolvido DEVE estar sob o workspace
+        try:
+            if not target_path.is_relative_to(workspace):
+                logger.warning(f"🚨 TENTATIVA DE VIOLAÇÃO DE SEGURANÇA: {filename} por namespace {self.current_namespace}")
+                raise PermissionError(f"Acesso negado: O caminho '{filename}' está fora do sandbox permitido.")
+        except AttributeError:
+            # Fallback para versoes de Python < 3.9 (Embora Alana use modern stack)
+            if not str(target_path).startswith(str(workspace.absolute())):
+                raise PermissionError(f"Acesso negado: O caminho '{filename}' viola o isolamento.")
             
         return target_path
 

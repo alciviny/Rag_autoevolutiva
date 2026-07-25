@@ -13,7 +13,9 @@ async def agent_websocket(websocket: WebSocket):
     Suporta isolamento por namespace e controle de missao.
     """
     await websocket.accept()
-    logger.info("🔌 WebSocket Agent Conectado")
+    from alana_system.utils.logging_context import set_trace_id, get_trace_id
+    trace_id = set_trace_id()
+    logger.info(f"🔌 WebSocket Agent Conectado | TraceID: {trace_id}")
     
     orchestrator = websocket.app.state.orchestrator
     approval_queue = asyncio.Queue()

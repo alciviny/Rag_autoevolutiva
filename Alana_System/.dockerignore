@@ -49,8 +49,7 @@ workspace/
 .files/
 
 # Exclude local binaries and Go artifacts
-bin/
-go_engines/
+# bin/ e go_engines/ permitidos para build multi-stage
 search_engine
 alana_ingestor
 alana_search

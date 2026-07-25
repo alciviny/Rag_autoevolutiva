@@ -21,16 +21,12 @@ class ProcessPathRequest(BaseModel):
     path: str
     namespace: str = "global"
 
-async def _background_ingestion_task(file_path: Path, namespace: str, app_state: Any):
+async def _background_ingestion_task(file_path: Path, namespace: str, app_state: Any, mode: str = "fast"):
     """Executa a ingestão industrial em segundo plano com controle de concorrência assíncrona."""
     async with ingestion_semaphore:
         try:
-            from alana_system.memory.intelligence import GraphIntelligence
-            intelligence = GraphIntelligence(
-                graph_store=app_state.graph_store, 
-                llm_engine=app_state.llm_engine,
-                embedder=app_state.embedder
-            )
+            # Utiliza a inteligência do Container Factory injetada no state para evitar locks no DB Local
+            intelligence = app_state.graph_intelligence
             
             manager = IngestionManager(
                 graph_store=app_state.graph_store,
@@ -39,11 +35,11 @@ async def _background_ingestion_task(file_path: Path, namespace: str, app_state:
                 embedder=app_state.embedder
             )
             
-            logger.info(f"⚙️ [Background] Processando: {file_path.name} no namespace '{namespace}'")
+            logger.info(f"⚙️ [Background] Processando: {file_path.name} no namespace '{namespace}' (Modo: {mode})")
             if file_path.is_dir():
-                await manager.process_directory(str(file_path), namespace=namespace)
+                await manager.process_directory(str(file_path), namespace=namespace, mode=mode)
             else:
-                await manager.process_file(str(file_path), namespace=namespace)
+                await manager.process_file(str(file_path), namespace=namespace, mode=mode)
             logger.info(f"✅ [Background] Concluído: {file_path.name}")
         except Exception as e:
             logger.error(f"❌ [Background] Falha em {file_path.name}: {e}", exc_info=True)
@@ -53,7 +49,8 @@ async def upload_document(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    namespace: str = Query("global", description="O projeto onde o arquivo sera guardado")
+    namespace: str = Query("global", description="O projeto onde o arquivo sera guardado"),
+    mode: str = Query("fast", description="Modo de ingestão: 'fast' ou 'deep'")
 ):
     """Recebe um arquivo e agenda o processamento industrial assíncrono."""
     # Verificação preventiva: Se o semáforo estiver "cheio", avisamos o usuário.
@@ -69,11 +66,11 @@ async def upload_document(
             shutil.copyfileobj(file.file, f)
 
         # Agenda tarefa em background
-        background_tasks.add_task(_background_ingestion_task, file_path, namespace, request.app.state)
+        background_tasks.add_task(_background_ingestion_task, file_path, namespace, request.app.state, mode)
 
         return {
             "status": "processing",
-            "message": f"Arquivo '{file.filename}' recebido. Processando em segundo plano no namespace '{namespace}'.",
+            "message": f"Arquivo '{file.filename}' recebido. Processando em segundo plano no namespace '{namespace}'. Modo: {mode}",
             "namespace": namespace
         }
     except Exception as e:

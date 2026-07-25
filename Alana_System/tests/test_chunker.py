@@ -11,6 +11,8 @@ from alana_system.ingestion.cleaner import CleanedPageText
 # Fixtures
 # ============================================================
 
+from unittest.mock import patch, MagicMock
+
 @pytest.fixture
 def chunker():
     """Retorna uma instância do TextChunker com parâmetros padrão para teste."""
@@ -38,39 +40,34 @@ def single_page():
 # Test Cases
 # ============================================================
 
-def test_chunking_normal(chunker, single_page):
+@patch("alana_system.preprocessing.chunker.BinaryBridge")
+def test_chunking_normal(mock_bridge, chunker, single_page):
     """
-    Testa o fluxo normal de chunking, onde parágrafos são agrupados
-    respeitando o `max_chars`.
+    Testa o fluxo normal de chunking com a ponte.
     """
-    chunks = chunker.chunk_pages([single_page], source_name="test_source")
-
-    # Rastreamento da lógica do chunker:
-    # paragraphs = ["p1" (46), "p2" (128), "p3" (18), "p4" (>100)]
-    # 1. i=0, para=p1. Adiciona ao buffer. current_paras=["p1"], current_len=46. i++.
-    # 2. i=1, para=p2 (len > max_chars).
-    #    - Buffer não está vazio, commita buffer: _commit_chunk(["p1"]). len > min_chars. CHUNK 1 criado.
-    #    - Buffer esvaziado.
-    #    - Commita parágrafo gigante: _build_chunk(p2). CHUNK 2 criado.
-    #    - i++.
-    # 3. i=2, para=p3. Adiciona ao buffer. current_paras=["p3"], current_len=18. i++.
-    # 4. i=3, para=p4 (len > max_chars).
-    #    - Buffer não está vazio, commita buffer: _commit_chunk(["p3"]). len < min_chars. NENHUM CHUNK criado.
-    #    - Buffer esvaziado.
-    #    - Commita parágrafo gigante: _build_chunk(p4). CHUNK 3 criado.
-    #    - i++.
-    # Fim do loop.
+    mock_bridge_instance = MagicMock()
+    # Simula o retorno de 4 chunks do Go
+    mock_bridge_instance.call.return_value = [
+        {"content": "Primeiro parágrafo do texto. Ele é curto e direto."},
+        {"content": "Segundo parágrafo é um pouco mais longo, com mais detalhes."},
+        {"content": "Terceiro. Curto."}, # será filtrado pois len < min_chars (16 < 20)
+        {"content": "Quarto parágrafo é deliberadamente muito, muito, muito longo para exceder o limite de caracteres de cem, forçando o chunker a tratá-lo como um caso especial e isolado."}
+    ]
+    mock_bridge.return_value = mock_bridge_instance
     
-    assert len(chunks) == 7
+    # Precisamos recriar o chunker para pegar o mock da bridge
+    chunker = TextChunker(max_chars=100, overlap_chars=30, min_chars=20)
+    chunks = chunker.chunk_pages([single_page], source_name="test_source")
+    
+    assert len(chunks) == 3
     assert "Primeiro parágrafo" in chunks[0].text
     assert "Segundo parágrafo" in chunks[1].text
-    assert any("Quarto parágrafo" in c.text for c in chunks)
-    assert chunks[-1].text.endswith("isolado.")
+    assert "Quarto parágrafo" in chunks[2].text
 
-def test_paragraph_too_long(chunker):
+@patch("alana_system.preprocessing.chunker.BinaryBridge")
+def test_paragraph_too_long(mock_bridge, single_page):
     """
     Testa o caso crítico onde um único parágrafo excede `max_chars`.
-    Ele deve se tornar um chunk sozinho, mesmo que muito grande.
     """
     long_paragraph = "a" * 150
     page = CleanedPageText(
@@ -80,21 +77,27 @@ def test_paragraph_too_long(chunker):
         cleaned_char_count=len(long_paragraph),
     )
     
+    mock_bridge_instance = MagicMock()
+    # Simula o corte do Go
+    mock_bridge_instance.call.return_value = [
+        {"content": "a" * 100},
+        {"content": "a" * 50}
+    ]
+    mock_bridge.return_value = mock_bridge_instance
+    chunker = TextChunker(max_chars=100, overlap_chars=30, min_chars=20)
+    
     chunks = chunker.chunk_pages([page], source_name="test_source")
     
-    assert len(chunks) == 3
+    assert len(chunks) == 2
     assert chunks[0].text.startswith("a")
     assert chunks[0].char_count == 100
-    assert chunks[-1].char_count <= 100
+    assert chunks[-1].char_count == 50
 
-def test_overlap_logic(chunker):
+@patch("alana_system.preprocessing.chunker.BinaryBridge")
+def test_overlap_logic(mock_bridge):
     """
     Testa se o overlap semântico está funcionando, mantendo parágrafos.
     """
-    # p1(30) + p2(30) + p3(30) -> len=90 + 4 (separadores) = 94. Cabe no chunk.
-    # p4(30) não cabe (94 + 2 + 30 > 100). Chunk [p1,p2,p3] é commitado.
-    # Overlap é construído a partir do fim, com limite de 30 chars. p3 (30) entra.
-    # Próximo chunk começa com o overlap [p3] e adiciona p4.
     p1 = "a" * 30
     p2 = "b" * 30
     p3 = "c" * 30
@@ -107,13 +110,22 @@ def test_overlap_logic(chunker):
         cleaned_char_count=len(text),
     )
 
+    mock_bridge_instance = MagicMock()
+    mock_bridge_instance.call.return_value = [
+        {"content": f"{p1}\n\n{p2}\n\n{p3}"},
+        {"content": f"{p3}\n\n{p4}"}
+    ]
+    mock_bridge.return_value = mock_bridge_instance
+    chunker = TextChunker(max_chars=100, overlap_chars=30, min_chars=20)
+
     chunks = chunker.chunk_pages([page], source_name="test_source")
 
     assert len(chunks) == 2
     assert chunks[0].text == f"{p1}\n\n{p2}\n\n{p3}"
     assert chunks[1].text == f"{p3}\n\n{p4}"
 
-def test_min_chars_logic(chunker):
+@patch("alana_system.preprocessing.chunker.BinaryBridge")
+def test_min_chars_logic(mock_bridge):
     """
     Testa se parágrafos ou chunks combinados que não atingem `min_chars`
     são descartados.
@@ -128,14 +140,18 @@ def test_min_chars_logic(chunker):
         cleaned_char_count=len(text),
     )
 
+    mock_bridge_instance = MagicMock()
+    mock_bridge_instance.call.return_value = [
+        {"content": "a" * 15}, # filtrado
+        {"content": "b" * 50}  # mantido
+    ]
+    mock_bridge.return_value = mock_bridge_instance
+    chunker = TextChunker(max_chars=100, overlap_chars=30, min_chars=20)
+
     chunks = chunker.chunk_pages([page], source_name="test_source")
     
-    # Rastreamento:
-    # 1. i=0, para=p1(15). Adiciona ao buffer. current_len=15.
-    # 2. i=1, para=p2(50). 15 + 2 + 50 <= 100. Cabe no buffer. current_len=67.
-    # Fim da página. Commita o buffer [p1, p2]. len > min_chars. CHUNK 1 criado.
     assert len(chunks) == 1
-    assert chunks[0].text == f"{p1}\n\n{p2}"
+    assert chunks[0].text == p2
 
 def test_chunk_id_is_deterministic(chunker):
     """

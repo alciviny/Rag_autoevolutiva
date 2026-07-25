@@ -32,11 +32,11 @@ class TestAgentSecurityAndAsync(unittest.IsolatedAsyncioTestCase):
         
         # Namespace A escreve um segredo
         writer.set_context("ProjectA")
-        writer.execute("secret.txt", "TOP_SECRET_A")
+        await writer.execute("secret.txt", "TOP_SECRET_A")
         
         # Namespace B tenta ler o segredo do A
         reader.set_context("ProjectB")
-        result = reader.execute("secret.txt")
+        result = await reader.execute("secret.txt")
         
         self.assertIn("[ERRO]", result)
         self.assertIn("não encontrado no sandbox do projeto ProjectB", result)
@@ -53,7 +53,7 @@ class TestAgentSecurityAndAsync(unittest.IsolatedAsyncioTestCase):
         writer.set_context("SafetyTest")
         
         # Tenta sair do sandbox
-        result = writer.execute("../../../outside.txt", "hacked")
+        result = await writer.execute("../../../outside.txt", "hacked")
         
         self.assertIn("[ERRO]", result)
         self.assertIn("Acesso negado", result)
@@ -87,13 +87,13 @@ class TestAgentSecurityAndAsync(unittest.IsolatedAsyncioTestCase):
         lister = ListDirTool()
         
         writer.set_context("ProjectAlpha")
-        writer.execute("alpha.py", "print(1)")
+        await writer.execute("alpha.py", "print(1)")
         
         writer.set_context("ProjectBeta")
-        writer.execute("beta.py", "print(2)")
+        await writer.execute("beta.py", "print(2)")
         
         lister.set_context("ProjectAlpha")
-        res_alpha = lister.execute()
+        res_alpha = await lister.execute()
         
         self.assertIn("alpha.py", res_alpha)
         self.assertNotIn("beta.py", res_alpha)

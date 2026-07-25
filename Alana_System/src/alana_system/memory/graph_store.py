@@ -24,16 +24,22 @@ class GraphStore:
     def _connect(self):
         """Cria uma conexao robusta com timeout e modo de seguranca para Windows/Docker."""
         import time
-        for attempt in range(3):
+        for attempt in range(5):
             try:
-                conn = sqlite3.connect(self.db_path, timeout=60.0)
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
                 conn.row_factory = sqlite3.Row
+                # Configuracoes industriais para alta concorrencia
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA cache_size=-64000;") # 64MB cache
+                conn.execute("PRAGMA temp_store=MEMORY;")
+                conn.execute("PRAGMA busy_timeout=30000;") # 30s
                 return conn
             except sqlite3.OperationalError as e:
-                if "disk I/O error" in str(e).lower() and attempt < 2:
-                    time.sleep(1)
+                msg = str(e).lower()
+                if ("disk i/o error" in msg or "database is locked" in msg) and attempt < 4:
+                    logger.warning(f"⚠️ SQLite ocupado/erro I/O (Tentativa {attempt+1}/5). Re-tentando...")
+                    time.sleep(0.5 * (attempt + 1))
                     continue
                 raise
 
@@ -50,18 +56,32 @@ class GraphStore:
                     description TEXT,
                     namespace TEXT DEFAULT 'global',
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_location TEXT DEFAULT 'unknown',
                     UNIQUE(name, namespace)
                 )
             """)
             
-            # Migracao para entities: adiciona namespace e description
-            try:
-                cursor.execute("SELECT description FROM entities LIMIT 1")
-            except sqlite3.OperationalError:
-                logger.info("🔧 Migrando entities: Adicionando coluna 'description' e 'namespace'...")
-                try: cursor.execute("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'global'")
-                except: pass
+            # Migracao Industrial: Garante que todas as colunas existam
+            cursor.execute("PRAGMA table_info(entities)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            missing_cols = []
+            if "namespace" not in columns:
+                cursor.execute("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'global'")
+                missing_cols.append("namespace")
+            if "description" not in columns:
                 cursor.execute("ALTER TABLE entities ADD COLUMN description TEXT")
+                missing_cols.append("description")
+            if "last_seen" not in columns:
+                cursor.execute("ALTER TABLE entities ADD COLUMN last_seen TIMESTAMP")
+                missing_cols.append("last_seen")
+            if "last_location" not in columns:
+                cursor.execute("ALTER TABLE entities ADD COLUMN last_location TEXT DEFAULT 'unknown'")
+                missing_cols.append("last_location")
+            
+            if missing_cols:
+                logger.info(f"🔧 Migração entities concluída: Adicionadas colunas {missing_cols}")
                 conn.commit()
             # Tabela de Relacoes (Core do Grafo)
             cursor.execute("""
@@ -80,10 +100,10 @@ class GraphStore:
             """)
             
             # Auto-Migracao Industrial: Garante consistencia do esquema
-            try:
-                cursor.execute("SELECT version FROM relations LIMIT 1")
-            except sqlite3.OperationalError:
-                logger.info("🔧 Migrando banco de dados: Adicionando coluna 'version'...")
+            cursor.execute("PRAGMA table_info(relations)")
+            rel_cols = [row[1] for row in cursor.fetchall()]
+            if "version" not in rel_cols:
+                logger.info("🔧 Migrando banco de dados: Adicionando coluna 'version' em relations...")
                 cursor.execute("ALTER TABLE relations ADD COLUMN version INTEGER DEFAULT 1")
                 conn.commit()
             # Tabela de Sinônimos/Aliases
@@ -118,21 +138,65 @@ class GraphStore:
                 )
             """)
             
-            # Tabela para Reconciliação Semântica (Armazena vetores de nomes de entidades)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS entity_embeddings (
-                    entity_name TEXT PRIMARY KEY,
-                    embedding BLOB NOT NULL,
-                    namespace TEXT DEFAULT 'global',
-                    FOREIGN KEY(entity_name) REFERENCES entities(name)
-                )
-            """)
+            # Removido: Tabela entity_embeddings agora foi descontinuada em favor do Qdrant (VectorStore).
             
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_namespace ON relations(namespace)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object)")
+            
+            # Tabela de Telemetria (Series Temporais do Lab)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS telemetry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_name TEXT NOT NULL,
+                    value REAL,
+                    unit TEXT,
+                    raw_reading TEXT,
+                    namespace TEXT DEFAULT 'global',
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_entity ON telemetry(entity_name)")
+
+            # Tabela de Sessões de Workflow (Resiliência Industrial - P3 Auditoria)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_sessions (
+                    namespace TEXT PRIMARY KEY,
+                    workflow_name TEXT NOT NULL,
+                    current_step_index INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
+
+    def add_telemetry_reading(self, entity_name: str, value: Optional[float], unit: str, raw_reading: str, namespace: str = "global"):
+        """Registra uma leitura tecnica capturada via Visao."""
+        try:
+            with self._connect() as conn:
+                conn.execute("""
+                    INSERT INTO telemetry (entity_name, value, unit, raw_reading, namespace)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (entity_name, value, unit, raw_reading, namespace))
+                conn.commit()
+                logger.info(f"📊 Telemetria registrada: {entity_name} = {value} {unit}")
+        except Exception as e:
+            logger.error(f"Erro ao salvar telemetria: {e}")
+
+    def get_entity(self, name: str, namespace: str = "global") -> Optional[Dict]:
+        """Recupera metadados de uma entidade de forma segura (Abstracao de Infra - P2 Auditoria)."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM entities WHERE name = ? AND namespace = ?", 
+                    (name, namespace)
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Erro ao buscar entidade {name}: {e}")
+            return None
 
     def normalize_name(self, name: str) -> str:
         """Normalizacao focada em precisao tecnica."""
@@ -179,9 +243,10 @@ class GraphStore:
         row = cursor.fetchone()
         return row["name"] if row else normalized
 
-    def add_knowledge(self, graph: KnowledgeGraphSchema, source_doc: str, page_number: int, namespace: str = "global") -> None:
-        """Persiste um grafo completo extraído por IA."""
+    def add_knowledge(self, graph: KnowledgeGraphSchema, source_doc: str, page_number: int, namespace: str = "global", metadata: Dict = None) -> None:
+        """Persiste um grafo completo extraído por IA com metadados espaciais."""
         if not graph: return
+        metadata = metadata or {}
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
@@ -194,13 +259,22 @@ class GraphStore:
                     if existing:
                         new_desc = entity.description if entity.description else ""
                         old_desc = existing["description"] if existing["description"] else ""
-                        # Mescla descricoes se forem diferentes e relevantes
                         if new_desc and new_desc not in old_desc:
                             merged = f"{old_desc} | {new_desc}".strip(" | ")
-                            cursor.execute("UPDATE entities SET description = ? WHERE name = ? AND namespace = ?", (merged, canonical, namespace))
+                            cursor.execute("""
+                                UPDATE entities SET description = ?, last_seen = CURRENT_TIMESTAMP, last_location = ? 
+                                WHERE name = ? AND namespace = ?
+                            """, (merged, metadata.get("location", "unknown"), canonical, namespace))
+                        else:
+                            cursor.execute("""
+                                UPDATE entities SET last_seen = CURRENT_TIMESTAMP, last_location = ? 
+                                WHERE name = ? AND namespace = ?
+                            """, (metadata.get("location", "unknown"), canonical, namespace))
                     else:
-                        cursor.execute("INSERT INTO entities (name, type, description, namespace) VALUES (?, ?, ?, ?)", 
-                                     (canonical, entity.type, entity.description, namespace))
+                        cursor.execute("""
+                            INSERT INTO entities (name, type, description, namespace, last_location) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (canonical, entity.type, entity.description, namespace, metadata.get("location", "unknown")))
                 
                 for rel in (graph.relations or []):
                     subj = self._resolve_canonical_name(cursor, rel.subject)
@@ -253,7 +327,7 @@ class GraphStore:
         except Exception:
             return []
 
-    def query_subgraph_by_namespace(self, namespace: str, limit: int = 150, version: int = 1) -> List[Dict]:
+    def query_subgraph_by_namespace(self, namespace: str, limit: int = 150, version: int = 1, file: str = None) -> List[Dict]:
         """Consulta relacoes e tipos em um unico JOIN (Otimizado para Dashboard) com suporte temporal."""
         query = """
             SELECT r.subject, r.relation, r.object, 
@@ -263,13 +337,19 @@ class GraphStore:
             LEFT JOIN entities e1 ON r.subject = e1.name AND r.namespace = e1.namespace
             LEFT JOIN entities e2 ON r.object = e2.name AND r.namespace = e2.namespace
             WHERE r.namespace = ? AND r.version = ?
-            ORDER BY r.timestamp DESC
-            LIMIT ?
         """
+        params = [namespace, version]
+        if file:
+            query += " AND r.source_doc = ?"
+            params.append(file)
+            
+        query += " ORDER BY r.timestamp DESC LIMIT ?"
+        params.append(limit)
+        
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute(query, (namespace, version, limit))
+                cursor.execute(query, tuple(params))
                 return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"Erro no export de subgrafo: {e}")
@@ -330,39 +410,154 @@ class GraphStore:
             )
             conn.commit()
 
-    # --- Reconciliação Semântica (Ponto 3 Auditoria) ---
-    def save_entity_embedding(self, name: str, embedding_vector: List[float], namespace: str = "global"):
-        import json
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO entity_embeddings (entity_name, embedding, namespace) VALUES (?, ?, ?)",
-                (name, json.dumps(embedding_vector), namespace)
-            )
-            conn.commit()
-
-    def get_all_entity_embeddings(self, namespace: str = "global") -> Dict[str, List[float]]:
-        import json
-        with self._connect() as conn:
-            rows = conn.execute("SELECT entity_name, embedding FROM entity_embeddings WHERE namespace = ?", (namespace,)).fetchall()
-            return {row["entity_name"]: json.loads(row["embedding"]) for row in rows}
+    # (Os métodos save_entity_embedding e get_all_entity_embeddings foram descontinuados e migrados para o Qdrant)
 
     def add_alias(self, alias: str, canonical: str):
         with self._connect() as conn:
             conn.execute("INSERT OR IGNORE INTO entity_aliases (alias, canonical_name) VALUES (?, ?)", (alias, canonical))
             conn.commit()
 
-    def get_all_edges(self, namespace: str = "global") -> List[tuple]:
+    def get_all_edges(self, namespace: str = "global", limit: Optional[int] = None) -> List[tuple]:
         """
         Retorna triplos filtrados por namespace (Ponto 1 Auditoria).
         Garante isolamento e evita carregamento total desnecessario.
         """
         try:
             with self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT subject, relation, object FROM relations WHERE namespace = ?",
-                    (namespace,)
-                ).fetchall()
+                query = "SELECT subject, relation, object FROM relations WHERE namespace = ?"
+                params = [namespace]
+                
+                if limit:
+                    query += " LIMIT ?"
+                    params.append(limit)
+                    
+                rows = conn.execute(query, tuple(params)).fetchall()
                 return [(r["subject"], r["relation"], r["object"]) for r in rows]
         except Exception as e:
             logger.error(f"Erro ao recuperar arestas do grafo: {e}")
+            return []
+
+    # --- Persistencia de Workflow (P3 Auditoria) ---
+    def save_workflow_session(self, namespace: str, workflow_name: str, step_index: int):
+        """Salva o progresso do guia tecnico no banco."""
+        try:
+            with self._connect() as conn:
+                conn.execute("""
+                    INSERT INTO workflow_sessions (namespace, workflow_name, current_step_index, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(namespace) DO UPDATE SET 
+                        workflow_name = EXCLUDED.workflow_name,
+                        current_step_index = EXCLUDED.current_step_index,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (namespace, workflow_name, step_index))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Erro ao salvar sessao de workflow: {e}")
+
+    def get_workflow_session(self, namespace: str) -> Optional[Dict]:
+        """Recupera sessao ativa para o usuario/dispositivo."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT * FROM workflow_sessions WHERE namespace = ?", (namespace,)).fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Erro ao recuperar sessao de workflow: {e}")
+            return None
+
+    def delete_workflow_session(self, namespace: str):
+        """Remove sessao concluida ou abortada."""
+        try:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM workflow_sessions WHERE namespace = ?", (namespace,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Erro ao deletar sessao de workflow: {e}")
+
+    def count_entities(self) -> int:
+        """Retorna a quantidade total de entidades distintas registradas no banco."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT COUNT(*) FROM entities").fetchone()
+                return row[0] if row else 0
+        except Exception as e:
+            logger.error(f"Erro ao contar entidades: {e}")
+            return 0
+
+    def entity_degree(self, name: str) -> Dict[str, int]:
+        """Retorna o grau de entrada (in) e saida (out) de uma entidade no grafo."""
+        try:
+            normalized = self.normalize_name(name)
+            with self._connect() as conn:
+                in_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE object = ?", (normalized,)).fetchone()[0]
+                out_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE subject = ?", (normalized,)).fetchone()[0]
+                return {"in": in_degree, "out": out_degree}
+        except Exception as e:
+            logger.error(f"Erro ao obter grau da entidade {name}: {e}")
+            return {"in": 0, "out": 0}
+
+    def infer_transitive_relations(self, max_hops: int = 3) -> int:
+        """Infere relacoes transitivas e salva-as no banco."""
+        try:
+            with self._connect() as conn:
+                # 1. Carrega todas as relacoes em memoria
+                rows = conn.execute("SELECT subject, relation, object, namespace FROM relations").fetchall()
+                if not rows:
+                    return 0
+                
+                adj = {}
+                for r in rows:
+                    adj.setdefault(r["subject"], {}).setdefault(r["namespace"], []).append(r["object"])
+
+                # 2. Computa caminhos transitivos de ate max_hops
+                inferred_triples = []
+                for start_node in adj:
+                    for ns in adj[start_node]:
+                        # BFS para achar todos os nos alcançaveis por caminhos de ate max_hops saltos
+                        queue = [(start_node, 0)]
+                        visited = {start_node}
+                        while queue:
+                            curr, depth = queue.pop(0)
+                            if 1 < depth <= max_hops:
+                                inferred_triples.append((start_node, "inferred_transitive", curr, ns))
+                            if depth < max_hops:
+                                for neighbor in adj.get(curr, {}).get(ns, []):
+                                    if neighbor not in visited:
+                                        visited.add(neighbor)
+                                        queue.append((neighbor, depth + 1))
+                
+                # 3. Insere no banco as relacoes transitivas inferidas
+                inferred_count = 0
+                for subj, rel, obj, ns in inferred_triples:
+                    # Nao reinsere se ja existir
+                    existing = conn.execute(
+                        "SELECT 1 FROM relations WHERE subject = ? AND relation = ? AND object = ? AND namespace = ?",
+                        (subj, rel, obj, ns)
+                    ).fetchone()
+                    if not existing:
+                        conn.execute("""
+                            INSERT INTO relations (subject, relation, object, source_doc, page_number, namespace)
+                            VALUES (?, ?, ?, 'INFERENCE_ENGINE', 0, ?)
+                        """, (subj, rel, obj, ns))
+                        inferred_count += 1
+                conn.commit()
+                return inferred_count
+        except Exception as e:
+            logger.error(f"Erro ao inferir relacoes transitivas: {e}")
+            return 0
+
+    def trending_entities(self, days: int = 7) -> List[Dict]:
+        """Retorna as entidades vistas recentemente nos ultimos N dias ordenadas por frequencia."""
+        try:
+            from datetime import datetime, timedelta
+            limit_date = (datetime.now() - timedelta(days=days)).isoformat()
+            with self._connect() as conn:
+                rows = conn.execute("""
+                    SELECT name as entity, last_seen, last_location 
+                    FROM entities 
+                    ORDER BY last_seen DESC 
+                    LIMIT 20
+                """).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Erro ao obter entidades em tendencia: {e}")
             return []

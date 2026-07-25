@@ -24,33 +24,40 @@ class TextCleaner:
         self.bridge = BinaryBridge("fast_processor.exe")
 
     def clean_pages(self, pages: List[PageText]) -> List[CleanedPageText]:
-        cleaned_pages = []
+        if not pages:
+            return []
+
+        # Agrupa todas as páginas em uma única requisição para o Go
+        pages_dict = {str(page.page_number): page.text for page in pages}
         
-        for page in pages:
-            try:
-                # Usa a ponte para chamar o Go
-                result = self.bridge.call({"text": page.text})
-                
-                # O binario pode retornar dict ou outro tipo JSON valido.
-                # Apenas dict possui a chave 'cleaned_text'.
-                if isinstance(result, dict):
-                    cleaned_text = result.get("cleaned_text", page.text)
-                else:
-                    # Resposta inesperada (lista, string, etc): mantém o original
-                    cleaned_text = page.text
+        try:
+            # Chama a ponte Go uma única vez
+            results = self.bridge.call({"pages": pages_dict})
+            
+            # Mapeia os resultados da resposta da ponte Go (lista de dicts)
+            cleaned_map = {}
+            if isinstance(results, list):
+                for res in results:
+                    p_num = int(res.get("page_number", 0))
+                    cleaned_map[p_num] = res.get("text", "")
+            
+            cleaned_pages = []
+            for page in pages:
+                cleaned_text = cleaned_map.get(page.page_number, page.text)
                 cleaned_pages.append(CleanedPageText(
                     page_number=page.page_number,
                     text=cleaned_text,
                     original_char_count=len(page.text),
                     cleaned_char_count=len(cleaned_text)
                 ))
-            except Exception as e:
-                logger.warning(f"Falha na limpeza da pagina {page.page_number}. Mantendo original. Erro: {e}")
-                cleaned_pages.append(CleanedPageText(
+            return cleaned_pages
+        except Exception as e:
+            logger.warning(f"Falha na limpeza em lote via Go. Mantendo originais. Erro: {e}")
+            return [
+                CleanedPageText(
                     page_number=page.page_number,
                     text=page.text,
                     original_char_count=len(page.text),
                     cleaned_char_count=len(page.text)
-                ))
-                
-        return cleaned_pages
+                ) for page in pages
+            ]

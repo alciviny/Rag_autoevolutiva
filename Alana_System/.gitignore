@@ -29,6 +29,15 @@ ENV/
 *.env
 secret.json
 
+# Scripts de teste avulsos na raiz (nao fazem parte do pacote)
+check_free_models.py
+test_*.py
+teste_*.txt
+validate_docker.bat
+
+# Monitoramento e telemetria local
+monitoring/
+
 # Alana System - Logs e Dados (Higiene Industrial)
 alana.log
 alana.log.*

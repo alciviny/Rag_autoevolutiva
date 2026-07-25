@@ -40,6 +40,7 @@ class QueryEngine:
         llm_engine: LLMEngine,
         top_k: int = 5,
         score_threshold: float = 0.35,
+        graph_intelligence: Optional[Any] = None,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -49,8 +50,11 @@ class QueryEngine:
         self.score_threshold = score_threshold
         
         # 1. Inicializa o cérebro analítico
-        from alana_system.memory.intelligence import GraphIntelligence
-        self.intelligence = GraphIntelligence(graph_store, llm_engine, self.embedder)
+        if graph_intelligence:
+            self.intelligence = graph_intelligence
+        else:
+            from alana_system.memory.intelligence import GraphIntelligence
+            self.intelligence = GraphIntelligence(graph_store, vector_store, llm_engine, self.embedder)
 
         # 2. Carrega modelos uma única vez (Performance Industrial)
         logger.info("🧠 Carregando Modelos de Re-Ranking e Extração...")
@@ -63,7 +67,7 @@ class QueryEngine:
         """
         logger.info(f"Executando RAG ({namespace}) para: '{question}'")
         
-        query_result = self.query(question, namespace=namespace)
+        query_result = await self.query(question, namespace=namespace)
         context_text = query_result["context_text"]
         
         messages = [
@@ -81,6 +85,33 @@ class QueryEngine:
             },
         ]
         return await self.llm_engine.generate_answer(messages=messages)
+
+    async def answer_query_stream(self, question: str, namespace: str = "global"):
+        """
+        Versao Industrial com Streaming. Recupera contexto e gera resposta palavra por palavra.
+        """
+        logger.info(f"🚀 [Stream RAG] Iniciando busca para: '{question}'")
+        
+        # 1. Recupera o contexto usando a mesma lógica híbrida
+        query_result = await self.query(question, namespace=namespace)
+        context_text = query_result["context_text"]
+        
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Você é a Alana, assistente de engenharia autônoma. "
+                    "Responda com base no contexto. Seja técnica e cite as fontes."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"CONTEXTO:\n{context_text}\n\nPERGUNTA: {question}",
+            },
+        ]
+        
+        # 2. Retorna o gerador assíncrono do LLM
+        return await self.llm_engine.generate_answer(messages=messages, stream=True)
 
     async def query(self, question: str, namespace: str = "global") -> Dict[str, Any]:
         """
@@ -105,9 +136,9 @@ class QueryEngine:
         vector_results = self._rerank_results(question, initial_results)
         t_rerank = time.perf_counter() - t0
 
-        # 3. Extração de Entidades e Deep Graph Search com Namespace
+        # 3. Extração de Entidades Semânticas (True GraphRAG) e Deep Graph Search
         t0 = time.perf_counter()
-        seed_entities = self._extract_seed_entities(question, vector_results)
+        seed_entities = await self.intelligence.get_seed_entities(question, top_k=5, namespace=namespace)
         graph_facts = self.graph_store.query_subgraph(seed_entities, limit=40, namespace=namespace)
         t_graph = time.perf_counter() - t0
 
@@ -152,39 +183,7 @@ class QueryEngine:
             logger.warning(f"Falha no Reranker: {e}. Usando ordem original.")
             return results[:self.top_k]
 
-    def _extract_seed_entities(self, question: str, vector_results: List[Dict]) -> List[str]:
-        """
-        Identifica entidades reais usando o extrator pré-carregado e normalização do Grafo.
-        """
-        entities = set()
-        
-        if self.entity_extractor and self.entity_extractor.use_spacy:
-            # 1. Extrai da pergunta
-            q_doc = self.entity_extractor.nlp(question)
-            for ent in q_doc.ents:
-                norm_name = self.graph_store.normalize_name(ent.text)
-                if norm_name:
-                    entities.add(norm_name)
-            
-            # 2. Extrai dos resultados vetoriais (top 3)
-            for res in vector_results[:3]:
-                text = res.get("text", "")
-                r_doc = self.entity_extractor.nlp(text[:1200]) 
-                for ent in r_doc.ents:
-                    norm_name = self.graph_store.normalize_name(ent.text)
-                    if norm_name:
-                        entities.add(norm_name)
-        
-        # Fallback para siglas e nomes em maiúsculo
-        import re
-        matches = re.findall(r'\b[A-Z][a-zA-Z0-9]{1,}\b', question)
-        for m in matches:
-            norm_name = self.graph_store.normalize_name(m)
-            if norm_name:
-                entities.add(norm_name)
 
-        logger.info(f"📍 Entidades normalizadas para GraphRAG: {list(entities)}")
-        return list(entities)
 
     def _build_hybrid_context(self, vector_results: List[Dict], graph_facts: List[Dict], insights: List[str] = None) -> str:
         """
@@ -196,14 +195,14 @@ class QueryEngine:
         if insights:
             context_parts.append("### 🧠 INSIGHTS DISRUPTIVOS (ANÁLISE DE PADRÕES):")
             for insight in insights:
-                context_parts.append(f"💡 {insight}")
+                context_parts.append(f"💡 **Insight:** {insight}")
             context_parts.append("") # Espaçador
 
         if graph_facts:
             context_parts.append("### CONHECIMENTO ESTRUTURADO (MAPA MENTAL DA ALANA):")
             context_parts.append("Os fatos abaixo representam relações lógicas extraídas de documentos técnicos:")
             # Remove duplicatas e formata de forma clara
-            unique_facts = {f"{f['subject']} --[{f['relation']}]--> {f['object']}" for f in graph_facts}
+            unique_facts = {f"**{f['subject']}** --[{f['relation']}]--> **{f['object']}**" for f in graph_facts}
             for fact in list(unique_facts)[:20]: # Aumentado para 20
                 context_parts.append(f"- {fact}")
             context_parts.append("") # Espaçador
@@ -211,7 +210,7 @@ class QueryEngine:
         if vector_results:
             context_parts.append("### TRECHOS DE DOCUMENTOS ORIGINAIS (CONTEXTO DETALHADO):")
             for res in vector_results:
-                source = f"{res.get('file_name', 'N/A')} [Pág {res.get('page_number', 'N/A')}]"
+                source = f"**{res.get('file_name', 'N/A')}** [Pág **{res.get('page_number', 'N/A')}**]"
                 context_parts.append(f"FONTE: {source}\nCONTEÚDO: {res.get('text', '')}\n---")
 
         return "\n".join(context_parts) if context_parts else "Nenhum contexto encontrado na base de conhecimento."

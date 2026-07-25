@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from alana_system.ingestion.pdf_loader import PDFLoader, PDFDocument
-from alana_system.data_ingestion.pdf_reader.reader import PDFMetadata
+from alana_system.ingestion.pdf_reader import PDFMetadata
 import pytest
 from pathlib import Path
 from PIL import Image

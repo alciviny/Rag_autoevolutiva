@@ -60,12 +60,15 @@ class VectorStore:
         path: Optional[str] = None,
         vector_dim: int = 384,
         distance: Distance = Distance.COSINE,
+        client: Optional[QdrantClient] = None,
     ):
         self.collection_name = collection_name
         self.vector_dim = vector_dim
         self.distance = distance
 
-        if location or path:
+        if client:
+            self.client = client
+        elif location or path:
             self.client = QdrantClient(location=location, path=path)
         else:
             self.client = QdrantClient(host=host or "localhost", port=port)
@@ -216,6 +219,53 @@ class VectorStore:
 
         logger.info("Upsert finalizado com sucesso")
 
+    def upsert_entities(
+        self,
+        entities: List[Dict[str, Any]],
+        namespace: str = "global",
+        batch_size: int = 100,
+    ) -> None:
+        """
+        Insere embeddings de entidades na collection.
+        'entities' deve ser uma lista de dicionários contendo 'name' e 'embedding'.
+        """
+        if not entities:
+            return
+
+        total = len(entities)
+        logger.info(f"Iniciando upsert de {total} entidades")
+
+        for i in range(0, total, batch_size):
+            batch = entities[i : i + batch_size]
+            points: List[PointStruct] = []
+
+            for ent in batch:
+                if len(ent["embedding"]) != self.vector_dim:
+                    logger.warning(f"Dimensão inválida para entidade {ent['name']}")
+                    continue
+
+                uuid_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, ent["name"]))
+
+                payload = {
+                    "original_id": ent["name"],
+                    "entity_name": ent["name"],
+                    "namespace": namespace,
+                }
+
+                points.append(
+                    PointStruct(
+                        id=uuid_id,
+                        vector=ent["embedding"], # type: ignore
+                        payload=payload,
+                    )
+                )
+
+            if points:
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=points,
+                )
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
@@ -247,13 +297,13 @@ class VectorStore:
                 filters.must.extend(namespace_filter.must)
             else:
                 filters = namespace_filter
-        # Validação de dimensão
+        # Validação de dimensão defensiva (Ponto 7 Auditoria)
         if len(query_vector) != self.vector_dim:
-            raise ValueError(
-                f"Dimensão inválida do query_vector | "
-                f"esperado={self.vector_dim} "
-                f"recebido={len(query_vector)}"
+            logger.warning(
+                f"⚠️ Ignorando busca vetorial: Dimensão incompatível | "
+                f"esperado={self.vector_dim} recebido={len(query_vector)}"
             )
+            return []
 
         # Usando a API moderna query_points do Qdrant (compatível com 1.17+)
         try:
@@ -287,6 +337,7 @@ class VectorStore:
                     "page_number": payload.get("page_number"),
                     "text": payload.get("text"),
                     "file_name": payload.get("file_name"),
+                    "entity_name": payload.get("entity_name"),
                 }
             )
 

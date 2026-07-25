@@ -6,6 +6,8 @@ from alana_system.memory.graph_store import GraphStore
 from alana_system.embeddings.embedder import TextEmbedder
 from alana_system.ingestion.audio_transcriber import AudioTranscriber
 
+from alana_system.memory.experience_store import ExperienceStore
+
 def get_llm_engine(request: Request) -> LLMEngine:
     return request.app.state.llm_engine
 
@@ -17,6 +19,9 @@ def get_vector_store(request: Request) -> VectorStore:
 
 def get_graph_store(request: Request) -> GraphStore:
     return request.app.state.graph_store
+
+def get_experience_store(request: Request) -> ExperienceStore:
+    return request.app.state.experience_store
 
 def get_embedder(request: Request) -> TextEmbedder:
     return request.app.state.embedder

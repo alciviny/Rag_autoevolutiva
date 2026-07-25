@@ -2,6 +2,7 @@
 import os
 import logging
 import asyncio
+from typing import Optional, Dict, Any, List, Union
 from .base_tool import BaseTool
 
 logger = logging.getLogger("alana.agent.tools.vision")
@@ -20,22 +21,29 @@ class VisionAnalysisTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Analisa imagens, fotos de painéis, diagramas técnicos ou esquemáticos. Informe o caminho do arquivo e o que deseja analisar."
+        return "Analisa imagens, diagramas ou esquemáticos técnicos. Suporta múltiplos arquivos (passar lista ou caminhos separados por vírgula)."
 
-    async def execute(self, image_path: str, prompt: str = "Analise tecnicamente esta imagem.") -> str:
+    async def execute(self, image_paths: Union[str, List[str]], prompt: str = "Analise tecnicamente esta imagem.") -> str:
         """
-        Executa a analise visual.
+        Executa a analise visual de um ou mais arquivos.
         """
-        if not os.path.exists(image_path):
-            return f"ERRO: Arquivo não encontrado em {image_path}"
+        paths = [p.strip() for p in image_paths.split(",")] if isinstance(image_paths, str) else image_paths
+        
+        valid_bytes = []
+        for path in paths:
+            if os.path.exists(path):
+                def _read(p):
+                    with open(p, "rb") as f: return f.read()
+                valid_bytes.append(await asyncio.to_thread(_read, path))
+            else:
+                logger.warning(f"Arquivo não encontrado: {path}")
+
+        if not valid_bytes:
+            return "ERRO: Nenhum arquivo de imagem válido foi encontrado nos caminhos fornecidos."
 
         try:
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
-            
-            # Execução assíncrona nativa
-            return await self.vision.analyze_image(image_bytes, prompt)
+            return await self.vision.analyze_image(valid_bytes, prompt)
 
         except Exception as e:
-            logger.error(f"Erro na ferramenta de visao: {e}")
-            return f"Falha na análise visual: {str(e)}"
+            logger.error(f"❌ Falha na analise de visao: {e}")
+            return f"Nao consegui processar as imagens. Erro: {str(e)}"

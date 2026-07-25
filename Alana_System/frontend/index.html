@@ -35,8 +35,12 @@
         <!-- Navigation -->
         <nav class="tabs">
             <button class="tab-btn active" data-tab="ingestion">Ingestão</button>
-            <button class="tab-btn" data-tab="knowledge">Cérebro</button>
+            <button class="tab-btn" data-tab="knowledge">Conhecimento</button>
+            <button class="tab-btn" data-tab="telemetry">Telemetria</button>
+            <button class="tab-btn" data-tab="spatial">Espacial</button>
+            <button class="tab-btn" data-tab="experiences">Experiências</button>
             <button class="tab-btn" data-tab="engineering">Missões</button>
+            <button class="tab-btn" data-tab="system">Sistema</button>
         </nav>
 
         <!-- Main Content -->
@@ -58,6 +62,14 @@
                         </div>
                         <span class="drop-text">Arraste arquivos ou <strong>selecione no diretório</strong></span>
                         <input type="file" id="file-input" hidden accept=".pdf,.txt,.md,.mp3,.wav,.m4a">
+                    </div>
+
+                    <div style="margin-top: 15px; display: flex; align-items: center; justify-content: center; gap: 10px;">
+                        <label for="ingestion-mode" style="font-weight: 500; font-size: 14px; color: var(--text-secondary);">MODO DE EXTRAÇÃO:</label>
+                        <select id="ingestion-mode" style="padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit;">
+                            <option value="fast">Rápido (Padrão)</option>
+                            <option value="deep">Profundo (Exaustivo)</option>
+                        </select>
                     </div>
 
                     <div class="feedback-area hidden" id="feedback-area">
@@ -82,8 +94,13 @@
             <!-- Knowledge Tab -->
             <div id="knowledge-tab" class="tab-content">
                 <div class="card graph-card">
-                    <div class="card-header">
-                        <h2>Grafo de Conhecimento Neural</h2>
+                    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <h2 style="margin: 0;">Grafo de Conhecimento Neural</h2>
+                            <select id="graph-file-select" style="padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 13px;">
+                                <option value="">Todos os Documentos</option>
+                            </select>
+                        </div>
                         <button class="refresh-btn" id="refresh-graph-btn">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -94,6 +111,39 @@
                     </div>
                     <p>Mapeamento dinâmico de entidades e relações extraídas via IA.</p>
                     <div id="knowledge-graph" class="graph-container"></div>
+                </div>
+            </div>
+
+            <!-- Telemetry Tab -->
+            <div id="telemetry-tab" class="tab-content">
+                <div class="card">
+                    <h2>Telemetria em Tempo Real</h2>
+                    <p>Métricas de hardware e sensores IoT capturadas durante as missões.</p>
+                    <div class="telemetry-grid" id="telemetry-display">
+                        <div class="empty-jobs">Aguardando dados de telemetria...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Spatial Tab -->
+            <div id="spatial-tab" class="tab-content">
+                <div class="card">
+                    <h2>Mapeador Espacial de Entidades</h2>
+                    <p>Localização física e contextual de componentes e ativos descobertos.</p>
+                    <div id="spatial-map" class="spatial-container">
+                        <div class="empty-jobs">Aguardando mapeamento de sensores...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Experiences Tab -->
+            <div id="experiences-tab" class="tab-content">
+                <div class="card">
+                    <h2>Linha do Tempo de Experiências</h2>
+                    <p>Memória episódica das missões, estratégias vencedoras e lições aprendidas.</p>
+                    <div id="experience-timeline" class="timeline-container">
+                        <div class="empty-jobs">Nenhuma experiência imortalizada ainda.</div>
+                    </div>
                 </div>
             </div>
 
@@ -115,7 +165,12 @@
                             <div class="input-group">
                                 <textarea id="mission-input"
                                     placeholder="Ex: Analise a estabilidade térmica deste circuito e simule uma falha no capacitor de entrada..."></textarea>
-                                <button id="run-mission-btn">INICIAR MISSÃO</button>
+                                <div class="action-bar">
+                                    <button id="run-mission-btn">INICIAR MISSÃO</button>
+                                    <button id="voice-btn" class="voice-btn" title="Falar Missão">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -165,6 +220,34 @@
                 </div>
             </div>
 
+            <!-- System Tab -->
+            <div id="system-tab" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Monitor de Operações de Background</h2>
+                        <div class="status-badge" id="system-health">HEALTHY</div>
+                    </div>
+                    <p>Tarefas resilientes sendo processadas pelo TaskManager da Alana.</p>
+                    <div id="system-tasks-list" class="system-tasks-list">
+                        <div class="empty-jobs">Nenhuma operação de background em execução.</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Configurações do Orquestrador</h2>
+                    <div class="config-grid">
+                        <div class="config-item">
+                            <label>Auto-Aprovação</label>
+                            <input type="checkbox" id="auto-approve-toggle">
+                        </div>
+                        <div class="config-item">
+                            <label>Modo de Pesquisa Profunda</label>
+                            <input type="checkbox" id="deep-search-toggle" checked>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Messages -->
             <div class="message-box hidden" id="message-box">
                 <p id="message-text"></p>
@@ -172,9 +255,12 @@
 
             <!-- Monitor -->
             <div class="log-console" id="log-console">
-                <h3>
-                    <div class="status-indicator active"></div>Monitor do Sistema
-                </h3>
+                <div class="log-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                        <div class="status-indicator active"></div>Monitor do Sistema
+                    </h3>
+                    <button id="toggle-log-btn" style="background: none; border: none; color: #a1a1aa; cursor: pointer; font-size: 14px;">Ocultar 🔽</button>
+                </div>
                 <pre id="log-text">Aguardando telemetria...</pre>
             </div>
         </main>

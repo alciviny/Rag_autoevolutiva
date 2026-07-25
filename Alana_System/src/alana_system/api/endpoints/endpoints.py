@@ -6,13 +6,12 @@ Includes ingestion, querying, and deep search functionalities.
 
 Features:
 - FastAPI-based endpoints.
-- Authentication and validation.
-- Error handling and logging.
+- Dependency Injection via AlanaContainer.
+- Multi-tenant namespace support.
 - Async operations for scalability.
-
-Dependencies: fastapi, uvicorn, pydantic.
 """
 
+import json
 import logging
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
@@ -20,39 +19,34 @@ from pydantic import BaseModel
 import asyncio
 
 from ..ingestion.pdf_loader import PDFLoader
-from ..query.query_engine import QueryEngine
-from ..qa_system.deep_search_agent import DeepSearchAgent
-from ..inference.llm_engine import LLMEngine
-from ..memory.graph_store import GraphStore
-from ..memory.vector_store import VectorStore
-from ..embeddings.embedder import TextEmbedder
-from ..agent.core.engine import AgentEngine
+from ..core.factory import container
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize components (in production, use dependency injection)
-llm_engine = LLMEngine()
-graph_store = GraphStore()
-vector_store = VectorStore()
-embedder = TextEmbedder()
-query_engine = QueryEngine(embedder, vector_store, graph_store, llm_engine)
-deep_search_agent = DeepSearchAgent(llm_engine, graph_store)
-
 app = FastAPI(title="Alana LLM API", version="1.0.0")
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicializa todos os motores industriais através da Fábrica na inicialização da API."""
+    logger.info("Iniciando Alana API...")
+    container.initialize_all()
 
 # Pydantic models for requests/responses
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = 5
+    namespace: str = "global"
 
 class QueryResponse(BaseModel):
     answer: str
     sources: List[str]
+    namespace: str
 
 class DeepSearchRequest(BaseModel):
     query: str
+    namespace: str = "global"
 
 class DeepSearchResponse(BaseModel):
     report: str
@@ -72,14 +66,18 @@ async def query_knowledge(request: QueryRequest):
     """
     Query the knowledge base.
     
-    Performs RAG: retrieves relevant context and generates answer.
+    Performs True Semantic RAG: retrieves relevant context and generates answer.
     """
     try:
+        query_engine = container.get("query_engine")
+        if not query_engine:
+            raise ValueError("QueryEngine não está inicializado.")
+            
         answer = query_engine.answer_query(request.question)
-        # Mock sources (enhance to return actual sources)
         sources = ["graph_memory", "vector_memory"]
-        logger.info(f"Query processed: {request.question}")
-        return QueryResponse(answer=answer, sources=sources)
+        logger.info(f"Query processed: {request.question} no namespace '{request.namespace}'")
+        
+        return QueryResponse(answer=answer, sources=sources, namespace=request.namespace)
     except Exception as e:
         logger.error(f"Query failed: {e}")
         raise HTTPException(status_code=500, detail="Query processing failed")
@@ -88,23 +86,22 @@ async def query_knowledge(request: QueryRequest):
 async def perform_deep_search(request: DeepSearchRequest, background_tasks: BackgroundTasks):
     """
     Perform deep web search, generate report, and store in graph.
-    
     Runs asynchronously in background for long operations.
     """
     try:
-        # Run in background to avoid timeout
-        background_tasks.add_task(_run_deep_search, request.query)
-        logger.info(f"Deep search initiated: {request.query}")
+        background_tasks.add_task(_run_deep_search, request.query, request.namespace)
+        logger.info(f"Deep search initiated: {request.query} no namespace '{request.namespace}'")
         return {"message": "Deep search started. Check logs for completion."}
     except Exception as e:
         logger.error(f"Deep search failed: {e}")
         raise HTTPException(status_code=500, detail="Deep search failed")
 
-async def _run_deep_search(query: str):
+async def _run_deep_search(query: str, namespace: str):
     """Background task for deep search."""
     try:
+        deep_search_agent = container.get("deep_search_agent")
         result = await deep_search_agent.perform_deep_search(query)
-        logger.info(f"Deep search completed: {query}, stored: {result['stored']}")
+        logger.info(f"Deep search completed: {query}, stored: {result.get('stored', False)}")
     except Exception as e:
         logger.error(f"Background deep search failed: {e}")
 
@@ -112,24 +109,19 @@ async def _run_deep_search(query: str):
 async def ingest_pdf(file: UploadFile = File(...)):
     """
     Ingest a PDF file.
-    
     Uploads and processes PDF, extracting and storing knowledge.
     """
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
     try:
-        # Save temporarily (in production, use proper storage)
         temp_path = f"/tmp/{file.filename}"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
         
-        # Process with PDFLoader
         loader = PDFLoader(raw_dir="/tmp")
         extracted = loader.discover_and_extract()
         
-        # Here, integrate with preprocessing and storage
-        # For now, just count
         processed = len(extracted)
         
         logger.info(f"PDF ingested: {file.filename}, documents: {processed}")
@@ -150,27 +142,34 @@ async def agent_websocket(websocket: WebSocket):
     Envia pensamentos, ações e resultados conforme acontecem.
     """
     await websocket.accept()
-    engine = AgentEngine()
     
-    # Callback para enviar eventos da Alana para o Browser
-    async def send_event(event):
+    # Adquire o Engenheiro oficial via DI Container (Garante acesso ao Cérebro e Grafo)
+    orchestrator = container.get("orchestrator")
+    if not orchestrator:
+        await websocket.send_json({"type": "error", "data": {"message": "Orquestrador não inicializado na Factory."}})
+        await websocket.close()
+        return
+        
+    engine = orchestrator.engineer
+    
+    # Callback adaptado para o novo formato de eventos
+    async def send_event(event_type: str, data: dict):
         try:
-            await websocket.send_json(event)
+            await websocket.send_json({"type": event_type, "data": data})
         except Exception:
             pass # Socket fechado
             
-    engine.on_event(send_event)
-    
     try:
         while True:
             # Espera o comando inicial ou novos comandos
             data = await websocket.receive_text()
             request = json.loads(data)
             mission = request.get("mission")
+            namespace = request.get("namespace", "global")
             
             if mission:
-                # Roda a missão (o engine emitirá eventos via callback)
-                await engine.run_mission(mission)
+                # O motor agora é invocado passando o callback diretamente
+                await engine.run_mission(mission, namespace=namespace, event_callback=send_event)
             else:
                 await websocket.send_json({"type": "error", "data": {"message": "Nenhuma missão fornecida."}})
                 
@@ -185,15 +184,11 @@ async def agent_websocket(websocket: WebSocket):
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check."""
+    """Detailed health check validating the DI Container."""
+    llm = container.get("llm_engine")
     return {
-        "status": "healthy",
-        "components": {
-            "llm_engine": "ok",
-            "graph_store": "ok",
-            "vector_store": "ok",
-            "embedder": "ok"
-        }
+        "status": "healthy" if llm else "degraded",
+        "container": "initialized" if llm else "uninitialized"
     }
 
 if __name__ == "__main__":

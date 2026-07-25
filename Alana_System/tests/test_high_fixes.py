@@ -56,27 +56,43 @@ class TestHighFixes(unittest.IsolatedAsyncioTestCase):
         from alana_system.ingestion.manager import IngestionManager
         
         deps = _make_mock_manager_deps()
-        # Mock extractor para retornar um hash e uma página
         deps['extractor'].get_file_hash.return_value = "hash123"
         mock_page = MagicMock()
         mock_page.text = "Conteúdo técnico de teste."
         mock_page.page_number = 1
+        
         deps['extractor'].extract_text.return_value = [mock_page]
         deps['cleaner'].clean_pages.return_value = [mock_page]
         deps['chunker'].chunk_pages.return_value = []
         
-        manager = IngestionManager(
-            graph_store=self.store,
-            vector_store=deps['vector_store'],
-            intelligence=deps['intelligence'],
-            extractor=deps['extractor'],
-            cleaner=deps['cleaner'],
-            chunker=deps['chunker'],
-            embedder=deps['embedder']
-        )
+        from alana_system.preprocessing.entity_extractor import KnowledgeGraphSchema
         
-        # Simula o processamento
-        manager.process_file("teste.pdf", namespace="projeto_h2")
+        with patch("alana_system.ingestion.manager.EntityExtractor") as MockEntityExtractor:
+            MockEntityExtractor.return_value.extract_graph = AsyncMock(return_value=KnowledgeGraphSchema(entities=[], relations=[]))
+            
+            manager = IngestionManager(
+                graph_store=self.store,
+                vector_store=deps['vector_store'],
+                intelligence=deps['intelligence'],
+                extractor=deps['extractor'],
+                cleaner=deps['cleaner'],
+                chunker=deps['chunker'],
+                embedder=deps['embedder']
+            )
+        
+        # Cria arquivo dummy para processar
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"dummy")
+            dummy_file = f.name
+            
+        try:
+            # Simula o processamento
+            await manager.process_file(dummy_file, namespace="projeto_h2")
+        finally:
+            if os.path.exists(dummy_file):
+                os.unlink(dummy_file)
         
         # Verifica no banco de dados real (via GraphStore)
         jobs = self.store.get_all_jobs()
@@ -89,9 +105,10 @@ class TestHighFixes(unittest.IsolatedAsyncioTestCase):
         from alana_system.agent.orchestrator import MultiAgentOrchestrator
         
         mock_llm = MagicMock()
-        mock_llm.generate_answer.return_value = "Plano: Passo 1, 2, 3"
+        mock_llm.generate_answer = AsyncMock(return_value="Plano: Passo 1, 2, 3")
+        mock_llm.think = AsyncMock(return_value="Ficha tecnica de teste")
         mock_query = MagicMock()
-        mock_query.query.return_value = {"context_text": "conhecimento"}
+        mock_query.query = AsyncMock(return_value={"context_text": "conhecimento"})
         mock_deep = MagicMock()
         
         # Patch do AgentEngine para não rodar a missão real (demorada/pesada)
@@ -124,7 +141,7 @@ class TestHighFixes(unittest.IsolatedAsyncioTestCase):
         from alana_system.agent.orchestrator import MultiAgentOrchestrator
         
         mock_llm = MagicMock()
-        mock_llm.generate_answer.return_value = "Plano de teste"
+        mock_llm.generate_answer = AsyncMock(return_value="Plano de teste")
         
         with patch("alana_system.agent.orchestrator.AgentEngine"):
             orchestrator = MultiAgentOrchestrator(mock_llm, MagicMock(), MagicMock())

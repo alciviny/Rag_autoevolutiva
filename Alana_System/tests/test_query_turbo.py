@@ -1,6 +1,6 @@
 import unittest
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 import sys
 import os
 
@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "s
 
 from alana_system.query.query_engine import QueryEngine
 
-class TestQueryEngineTurbo(unittest.TestCase):
+class TestQueryEngineTurbo(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Mocks
         self.mock_embedder = MagicMock()
@@ -29,7 +29,7 @@ class TestQueryEngineTurbo(unittest.TestCase):
         self.mock_graph.normalize_name.side_effect = lambda x: x.upper()
         
         self.mock_llm = MagicMock()
-        self.mock_llm.generate_answer.return_value = "Resposta Simulada."
+        self.mock_llm.generate_answer = AsyncMock(return_value="Resposta Simulada.")
 
         # Instancia o motor
         self.engine = QueryEngine(
@@ -39,9 +39,9 @@ class TestQueryEngineTurbo(unittest.TestCase):
             llm_engine=self.mock_llm
         )
 
-    def test_namespace_propagation(self):
+    async def test_namespace_propagation(self):
         """Verifica se o namespace chega ate o VectorStore e GraphStore."""
-        self.engine.query("Como funciona a turbina?", namespace="projeto_alfa")
+        await self.engine.query("Como funciona a turbina?", namespace="projeto_alfa")
         
         # Verifica VectorStore
         args, kwargs = self.mock_vector.search.call_args
@@ -51,9 +51,9 @@ class TestQueryEngineTurbo(unittest.TestCase):
         args, kwargs = self.mock_graph.query_subgraph.call_args
         self.assertEqual(kwargs.get('namespace'), "projeto_alfa", "Namespace nao chegou no GraphStore!")
 
-    def test_performance_metrics(self):
+    async def test_performance_metrics(self):
         """Verifica se as metricas de performance estao sendo rastreadas."""
-        result = self.engine.query("Teste de velocidade")
+        result = await self.engine.query("Teste de velocidade")
         perf = result.get("performance", {})
         
         self.assertIn("vector_initial", perf)

@@ -35,12 +35,10 @@ async def chat_endpoint(
             # Se tiver contexto manual, usa direto o LLM
             if request.context_override:
                 messages = [{"role": "user", "content": f"Contexto: {request.context_override}\n\nPergunta: {request.query}"}]
-                generator = llm.generate_answer(messages, stream=True)
+                generator = await llm.generate_answer(messages, stream=True)
             else:
-                # Caso contrario, usa o QueryEngine para buscar conhecimento
-                # TODO: Implementar stream no QueryEngine. Por enquanto, stream no LLM direto.
-                messages = [{"role": "user", "content": request.query}]
-                generator = llm.generate_answer(messages, stream=True)
+                # Agora usa o QueryEngine com Suporte a Stream (Industrial)
+                generator = await query_engine.answer_query_stream(request.query, namespace=request.namespace)
             
             return StreamingResponse(generator, media_type="text/plain")
 
@@ -48,11 +46,10 @@ async def chat_endpoint(
         if request.context_override:
             # Usa o LLM direto com o contexto fornecido
             messages = [{"role": "user", "content": f"Contexto: {request.context_override}\n\nPergunta: {request.query}"}]
-            answer = await run_in_threadpool(llm.generate_answer, messages)
+            answer = await llm.generate_answer(messages)
         else:
             # Usa o QueryEngine Industrial (Busca em Grafos + Vetores)
-            answer = await run_in_threadpool(
-                query_engine.answer_query, 
+            answer = await query_engine.answer_query(
                 request.query, 
                 namespace=request.namespace
             )

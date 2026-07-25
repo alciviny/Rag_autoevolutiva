@@ -25,3 +25,12 @@ export interface SearchResult {
     title: string;
     snippet: string;
 }
+
+export interface BackgroundTask {
+    id: string;
+    name: string;
+    status: string;
+    retries: number;
+    error: string | null;
+    duration: number | null;
+}

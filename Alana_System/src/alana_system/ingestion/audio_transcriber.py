@@ -42,10 +42,11 @@ class AudioTranscriber:
             logger.critical(f"❌ Falha ao carregar Faster-Whisper: {e}")
             raise
 
-    def transcribe(self, audio_path: Path, chunk_minutes: int = 5) -> List[PageText]:
+    def transcribe(self, audio_path: str | Path, chunk_minutes: int = 5) -> List[PageText]:
         """
         Transcreve o áudio e divide em 'páginas' lógicas baseadas no tempo.
         """
+        audio_path = Path(audio_path)
         if not audio_path.exists():
             raise FileNotFoundError(f"Arquivo não encontrado: {audio_path}")
 

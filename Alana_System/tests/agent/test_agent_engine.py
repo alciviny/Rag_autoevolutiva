@@ -27,6 +27,8 @@ async def test_engine_loop_retries_on_malformed_json(agent_engine, mock_llm):
     """Valida que o motor tenta novamente se a IA enviar lixo."""
     # 1 Resposta: Texto puro (falha)
     # 2 Resposta: JSON vlido (sucesso)
+    mock_llm.context_window = 8192
+    mock_llm.get_token_count.return_value = 100
     mock_llm.generate_answer.side_effect = [
         "No sou um JSON hoje",
         "{\"thought\": \"corrigi\", \"tool_name\": \"final_answer\", \"message\": \"ok\"}"

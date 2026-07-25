@@ -17,14 +17,12 @@ class CodeSecurityGuard:
     # Bibliotecas permitidas para ferramentas de engenharia
     WHITELISTED_IMPORTS = {
         "math", "numpy", "json", "logging", "datetime", "abc",
-        "typing", "alana_system.agent.tools.base_tool", "asyncio"
+        "typing", "alana_system.agent.tools.base_tool", "asyncio", "scipy", "pandas"
     }
     
-    # Funções estritamente proibidas
-    FORBIDDEN_FUNCTIONS = {
-        "eval", "exec", "__import__", "getattr", "setattr", "delattr",
-        "open", "input", "breakpoint", "compile"
-    }
+    # Funções estritamente proibidas (Auditoria Industrial)
+    BANNED_FUNCTIONS = {"eval", "exec", "open", "getattr", "setattr", "delattr", "input", "__import__", "breakpoint"}
+    BANNED_MODULES = {"os", "subprocess", "shutil", "sys", "socket", "requests", "urllib", "ctypes"}
 
     @classmethod
     def validate_code(cls, code: str) -> Tuple[bool, str]:
@@ -55,12 +53,15 @@ class CodeSecurityGuard:
 
                 # 2. Valida Chamadas de Função
                 if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name) and node.func.id in cls.FORBIDDEN_FUNCTIONS:
+                    if isinstance(node.func, ast.Name) and node.func.id in cls.BANNED_FUNCTIONS:
                         return False, f"Chamada de função proibida: {node.func.id}"
                     
-                    # Bloqueia chamadas do tipo os.system(...)
+                    # Bloqueia chamadas do tipo os.system(...) ou subprocess.run(...) ou Path.open(...)
                     if isinstance(node.func, ast.Attribute):
-                        if node.func.attr in ["system", "popen", "spawn", "execute", "rmtree"]:
+                        if node.func.attr in {
+                            "system", "popen", "spawn", "execute", "rmtree", "run", "call", "remove",
+                            "open", "write_text", "write_bytes", "read_text", "read_bytes"
+                        }:
                              return False, f"Chamada de atributo perigoso: {node.func.attr}"
 
                 # 3. Bloqueia acesso a dunders perigosos (__dict__, __class__)
@@ -118,6 +119,30 @@ class DynamicToolManager:
             logger.error(f"Erro ao salvar ferramenta dinâmica: {e}")
             return False, f"Falha no I/O: {str(e)}"
 
+    def promote_tool(self, from_namespace: str, tool_name: str) -> Tuple[bool, str]:
+        """
+        Promove uma ferramenta de um namespace específico para o namespace global (Elite Evolution).
+        """
+        if from_namespace == "global":
+            return False, "A ferramenta já é global."
+            
+        try:
+            source_path = os.path.join(self._get_namespace_path(from_namespace), f"{tool_name}.py")
+            dest_path = os.path.join(self._get_namespace_path("global"), f"{tool_name}.py")
+            
+            if not os.path.exists(source_path):
+                return False, f"Ferramenta '{tool_name}' não encontrada no namespace '{from_namespace}'."
+                
+            # Copia para o global
+            import shutil
+            shutil.copy2(source_path, dest_path)
+            logger.info(f"🌟 PROMOÇÃO: Ferramenta '{tool_name}' promovida de '{from_namespace}' para GLOBAL.")
+            return True, f"Ferramenta '{tool_name}' agora está disponível globalmente."
+            
+        except Exception as e:
+            logger.error(f"Erro ao promover ferramenta: {e}")
+            return False, str(e)
+
     def delete_tool(self, namespace: str, tool_name: str) -> bool:
         """Remove uma ferramenta do disco (P4)."""
         try:
@@ -130,6 +155,37 @@ class DynamicToolManager:
         except Exception as e:
             logger.error(f"Erro ao deletar ferramenta: {e}")
             return False
+
+    def run_garbage_collection(self, namespace: str, max_tools: int = 15, max_age_days: int = 7):
+        """
+        Realiza a limpeza de ferramentas antigas ou excessivas (Industrial GC).
+        Mantem apenas as 'max_tools' mais recentes ou ferramentas usadas nos ultimos 'max_age_days'.
+        """
+        import time
+        ns_path = self._get_namespace_path(namespace)
+        tools = []
+        
+        for filename in os.listdir(ns_path):
+            if filename.endswith(".py") and not filename.startswith("__"):
+                file_path = os.path.join(ns_path, filename)
+                mtime = os.path.getmtime(file_path)
+                tools.append((filename, mtime))
+        
+        # Ordena por data de modificacao (mais recentes primeiro)
+        tools.sort(key=lambda x: x[1], reverse=True)
+        
+        # 1. Limpeza por quantidade
+        if len(tools) > max_tools:
+            for filename, _ in tools[max_tools:]:
+                self.delete_tool(namespace, filename[:-3])
+                logger.info(f"♻️ GC: Removendo ferramenta excedente: {filename}")
+        
+        # 2. Limpeza por idade (opcional, aqui implementada como segurança extra)
+        now = time.time()
+        for filename, mtime in tools[:max_tools]:
+            if (now - mtime) > (max_age_days * 86400):
+                self.delete_tool(namespace, filename[:-3])
+                logger.info(f"♻️ GC: Removendo ferramenta obsoleta por idade: {filename}")
 
     def load_tools_for_namespace(self, namespace: str) -> List[BaseTool]:
         """Carrega todas as ferramentas customizadas de um namespace."""

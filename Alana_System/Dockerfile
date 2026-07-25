@@ -1,3 +1,16 @@
+# ESTÁGIO 1: Compilação dos Motores Go (Músculos Industriais)
+FROM golang:1.21-alpine AS go-builder
+WORKDIR /build
+
+# Copia todos os fontes Go
+COPY go_engines/ ./go_engines/
+
+# Compila os binários nativos para Linux/AMD64
+RUN go build -o semantic_chunker ./go_engines/chunker/main.go
+RUN go build -o fast_processor ./go_engines/cleaner/main.go
+RUN go build -o graph_turbo ./go_engines/graph/main.go
+
+# ESTÁGIO 2: Ambiente de Execução Python (Cérebro Cognitivo)
 FROM python:3.10-slim
 
 # Evita a criação de arquivos .pyc e permite logs em tempo real
@@ -9,15 +22,26 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     ffmpeg \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Cria pasta de binários
+RUN mkdir -p /app/bin
+
+# Copia os binários compilados no Estágio 1
+COPY --from=go-builder /build/semantic_chunker /app/bin/
+COPY --from=go-builder /build/fast_processor /app/bin/
+COPY --from=go-builder /build/graph_turbo /app/bin/
+
+# Garante que os motores sejam executáveis
+RUN chmod +x /app/bin/*
+
 # --- OTIMIZAÇÃO: Instala primeiro as bibliotecas gigantes ---
-# Isso cria uma camada de cache que só é invalidada se as versões mudarem
-RUN pip install --no-cache-dir \
-    torch \
-    sentence-transformers \
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch==2.4.1+cpu \
+    sentence-transformers==2.7.0 \
     llama-cpp-python \
     openai-whisper \
     scipy \
@@ -28,11 +52,11 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- Baixa modelos spaCy (também cacheado) ---
+# --- Baixa modelos spaCy ---
 RUN python -m spacy download en_core_web_sm && \
     python -m spacy download pt_core_news_sm
 
-# Copia o código (durante o desenvolvimento usaremos volumes para ser instantâneo)
+# Copia o código fonte Python
 COPY . .
 
 EXPOSE 8000

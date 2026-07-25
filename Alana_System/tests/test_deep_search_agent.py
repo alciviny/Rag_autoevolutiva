@@ -1,113 +1,90 @@
-"""
-test_deep_search_agent.py
-
-Testes para DeepSearchAgent.
-"""
-
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
-from alana_system.qa_system.deep_search_agent import (
-    DeepSearchAgent, WebSearcher, ResultComparator, ReportSummarizer, KnowledgeStorer, SearchResult
-)
+from unittest.mock import AsyncMock, MagicMock, patch
+from alana_system.qa_system.deep_search_agent import DeepSearchAgent
+from alana_system.qa_system.searcher import WebSearcher
+from alana_system.qa_system.storer import KnowledgeStorer
+from alana_system.qa_system.crawler import WebCrawler
 from alana_system.inference.llm_engine import LLMEngine
 from alana_system.memory.graph_store import GraphStore
-from alana_system.preprocessing.entity_extractor import EntityExtractor
-from pathlib import Path
-
+from alana_system.preprocessing.entity_extractor import EntityExtractor, KnowledgeGraphSchema
 
 @pytest.fixture
-def mock_llm_engine():
-    engine = MagicMock(spec=LLMEngine)
-    engine.generate_answer = MagicMock(return_value="Mocked report")
-    return engine
-
-
-@pytest.fixture
-def mock_entity_extractor(mock_llm_engine):
-    extractor = MagicMock(spec=EntityExtractor)
-    extractor.extract_graph = MagicMock(return_value=MagicMock())
-    return extractor
-
+def mock_llm():
+    llm = MagicMock()
+    llm.generate_answer = AsyncMock(return_value="Relatorio Gerado")
+    return llm
 
 @pytest.fixture
-def mock_graph_store(tmp_path):
-    db_path = tmp_path / "test.db"
-    store = GraphStore(str(db_path))
+def mock_graph_store():
+    store = MagicMock()
     return store
 
-
 @pytest.fixture
-def agent(mock_llm_engine, mock_graph_store, mock_entity_extractor):
-    return DeepSearchAgent(mock_llm_engine, mock_graph_store, mock_entity_extractor)
-
-
-@pytest.mark.asyncio
-async def test_web_searcher_scrape():
-    searcher = WebSearcher()
-    # Mock a simple page
-    result = await searcher._scrape_page("https://httpbin.org/html")
-    assert "title" in result
-    assert "text" in result
-
+def mock_extractor():
+    extractor = MagicMock()
+    schema = KnowledgeGraphSchema(entities=[], relations=[])
+    extractor.extract_graph = AsyncMock(return_value=schema)
+    return extractor
 
 @pytest.mark.asyncio
-async def test_result_comparator(agent, mock_llm_engine):
-    comparator = agent.comparator
-    results = [
-        SearchResult("url1", "Title1", "Snippet1", "Content1"),
-        SearchResult("url2", "Title2", "Snippet2", "Content2")
-    ]
-    comparison = await comparator.compare_results("test query", results)
-    assert "ranked" in comparison
-    assert "analysis" in comparison
-    mock_llm_engine.generate_answer.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_report_summarizer(agent, mock_llm_engine):
-    summarizer = agent.summarizer
-    comparison = {"ranked": [], "analysis": "Test analysis"}
-    report = await summarizer.generate_report("test query", comparison)
-    assert isinstance(report, str)
-    mock_llm_engine.generate_answer.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_knowledge_storer(agent, mock_graph_store):
-    storer = agent.storer
-    stored = await storer.store_report("test query", "Test report content")
-    assert stored is True  # Assuming add_knowledge succeeds
-
-
-@pytest.mark.asyncio
-async def test_deep_search_agent_full(agent, mock_llm_engine, mock_graph_store):
-    # Mock dependencies
-    agent.searcher.search_and_scrape = AsyncMock(return_value=[
-        SearchResult("url1", "Title1", "Snippet1", "Content1")
+async def test_deep_search_agent_perform(mock_llm, mock_graph_store, mock_extractor):
+    agent = DeepSearchAgent(mock_llm, mock_graph_store, mock_extractor)
+    
+    # Mock searcher.search
+    agent.searcher.search = AsyncMock(return_value=[
+        {"url": "http://test.com", "title": "Test Title", "content": "Test Content", "score": 0.9}
     ])
+    agent.searcher.deep_scrape = AsyncMock(return_value="Scraped Content")
     
-    result = await agent.perform_deep_search("test query")
+    res = await agent.perform_deep_search("test query", namespace="test_ns", use_deep_crawl=False)
     
-    assert "query" in result
-    assert "results" in result
-    assert "comparison" in result
-    assert "report" in result
-    assert "stored" in result
-    assert "deep_crawl_used" in result
-    assert result["deep_crawl_used"] is False  # Default value
-
+    assert res["status"] == "completed"
+    assert res["query"] == "test query"
+    assert res["namespace"] == "test_ns"
+    assert res["report"] == "Relatorio Gerado"
+    assert res["sources"] == ["http://test.com"]
+    assert res["stored_in_graph"] is True
 
 @pytest.mark.asyncio
-async def test_deep_search_agent_with_deep_crawl(agent, mock_llm_engine, mock_graph_store):
-    # Mock dependencies
-    agent.searcher.search_and_scrape = AsyncMock(return_value=[
-        SearchResult("url1", "Title1", "Snippet1", "Content1", depth=2, crawled_urls={"url1", "url2"})
-    ])
+async def test_deep_search_agent_no_results(mock_llm, mock_graph_store, mock_extractor):
+    agent = DeepSearchAgent(mock_llm, mock_graph_store, mock_extractor)
+    agent.searcher.search = AsyncMock(return_value=[])
     
-    result = await agent.perform_deep_search("test query", use_deep_crawl=True)
-    
-    assert result["deep_crawl_used"] is True
-    assert len(result["results"]) == 1
-    assert result["results"][0].depth == 2
-    assert "url2" in result["results"][0].crawled_urls
+    res = await agent.perform_deep_search("test query")
+    assert res["status"] == "no_results"
+
+@pytest.mark.asyncio
+async def test_knowledge_storer(mock_graph_store, mock_extractor):
+    storer = KnowledgeStorer(mock_graph_store, mock_extractor)
+    success = await storer.store_report("query", "report content", namespace="test_ns")
+    assert success is True
+    mock_extractor.extract_graph.assert_called_once_with("report content")
+    mock_graph_store.add_knowledge.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_web_searcher():
+    with patch("requests.post") as mock_post:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "results": [
+                {"url": "http://test.com", "title": "Test Title", "content": "Test Content", "score": 0.9}
+            ]
+        }
+        mock_post.return_value = mock_response
+        
+        searcher = WebSearcher(api_key="fake-key")
+        results = await searcher.search("query")
+        assert len(results) == 1
+        assert results[0]["url"] == "http://test.com"
+
+@pytest.mark.asyncio
+async def test_web_crawler():
+    crawler = WebCrawler()
+    with patch.object(crawler, "_scrape_page") as mock_scrape:
+        mock_scrape.return_value = {
+            "text": "Extracted Text Content",
+            "links": []
+        }
+        text = await crawler.crawl("http://start.com")
+        assert text == "Extracted Text Content"

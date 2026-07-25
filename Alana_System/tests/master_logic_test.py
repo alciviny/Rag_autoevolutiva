@@ -12,7 +12,7 @@ from alana_system.query.query_engine import QueryEngine
 from alana_system.memory.graph_store import GraphStore
 from alana_system.memory.vector_store import VectorStore
 from alana_system.embeddings.embedder import TextEmbedder
-from alana_system.agent.autonomy_loop import AutonomyEngine
+from alana_system.agent.core.engine import AgentEngine
 from alana_system.ingestion.note_extractor import NoteExtractor
 from alana_system.ingestion.text_extractor import PageText
 
@@ -91,7 +91,7 @@ async def run_master_battery():
     # 5. TESTE DE AGÊNCIA E PENSAMENTOS (WEB SOCKET READY)
     print(f"\n--- 5. Simulando Missão da Engenheira Autônoma ---")
     try:
-        agent = AutonomyEngine(llm=llm, query_engine=qe)
+        agent = AgentEngine(llm=llm, query_engine=qe)
         
         captured_events = []
         async def mock_callback(type, data):
@@ -100,7 +100,7 @@ async def run_master_battery():
                 print(f"   {BLUE}[Pensamento da Alana]{RESET}: {data['content']}")
 
         # Missão curta para testar o loop
-        await agent.run_task("Verifique o arquivo 'teste.txt' e diga se ele existe.", event_callback=mock_callback)
+        await agent.run_mission("Verifique o arquivo 'teste.txt' e diga se ele existe.", event_callback=mock_callback)
         
         has_logic = "thought" in captured_events and "cycle_start" in captured_events
         log_test("Loop de Autonomia", has_logic, f"Eventos de streaming gerados: {len(captured_events)}")

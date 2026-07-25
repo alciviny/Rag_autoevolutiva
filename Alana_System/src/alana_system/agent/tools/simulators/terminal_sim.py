@@ -2,19 +2,38 @@ import subprocess
 from pathlib import Path
 from ..base_tool import BaseTool
 
+import shlex
+
 class TerminalSimulatorTool(BaseTool):
     name = "run_terminal_simulator"
-    description = "Executa um comando de simulador CLI genérico no workspace (ex: PySpice, gcc, wokwi). Argumento: 'command' (str)"
+    description = "Executa um simulador CLI estritamente seguro e isolado (ex: python, gcc, ngspice, wokwi). Argumento: 'command' (str)"
+    
+    # Lista restrita de binários permitidos para evitar RCE
+    ALLOWED_BINARIES = {"python", "gcc", "g++", "ngspice", "wokwi-cli", "make", "echo"}
     
     def __init__(self, workspace_path: str = "workspace"):
         self.workspace = Path(workspace_path)
         
     def execute(self, command: str) -> str:
+        # Isolamento de projeto industrial
+        safe_workspace = self.workspace / self.current_namespace
+        safe_workspace.mkdir(parents=True, exist_ok=True)
+        
         try:
+            # Sanitização contra Injeção de Shell (Evita pipelines maliciosos: "gcc test.c; rm -rf /")
+            args = shlex.split(command)
+            if not args:
+                return "[FALHA CRÍTICA] Comando vazio."
+                
+            base_bin = args[0]
+            if base_bin not in self.ALLOWED_BINARIES:
+                return f"[BLOQUEIO DE SEGURANÇA] O binário '{base_bin}' não está na whitelist autorizada de simuladores. Solicite a criação de uma ferramenta própria se necessário."
+            
+            # shell=False garante que metacaracteres (>, <, |, ;) não sejam avaliados
             result = subprocess.run(
-                command,
-                cwd=self.workspace,
-                shell=True,
+                args,
+                cwd=safe_workspace,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=45 

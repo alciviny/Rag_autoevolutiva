@@ -14,9 +14,9 @@ from alana_system.query.query_engine import QueryEngine
 from alana_system.agent.core.engine import AgentEngine
 from alana_system.preprocessing.entity_extractor import KnowledgeGraphSchema, EntitySchema
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 
-class TestIndustrialIntegrity(unittest.TestCase):
+class TestIndustrialIntegrity(unittest.IsolatedAsyncioTestCase):
     """
     Suite de Teste Industrial para Validacao de Namespaces e Estabilidade.
     """
@@ -44,7 +44,7 @@ class TestIndustrialIntegrity(unittest.TestCase):
             
             # Garantimos que os extratores internos sejam mocks funcionais
             self.query_engine.entity_extractor = MagicMock()
-            self.query_engine.entity_extractor.extract_graph.return_value = KnowledgeGraphSchema(entities=[], relations=[])
+            self.query_engine.entity_extractor.extract_graph = AsyncMock(return_value=KnowledgeGraphSchema(entities=[], relations=[]))
         
     def tearDown(self):
         # Fecha o objeto e força a limpeza para liberar o arquivo no Windows
@@ -82,7 +82,7 @@ class TestIndustrialIntegrity(unittest.TestCase):
         
         print("DONE: Isolamento de dados entre Namespaces validado.")
 
-    def test_agent_tool_isolation(self):
+    async def test_agent_tool_isolation(self):
         """Valida se as ferramentas do agente respeitam o contexto injetado."""
         from alana_system.agent.tools.memory_tool import MemoryTool
         
@@ -98,7 +98,7 @@ class TestIndustrialIntegrity(unittest.TestCase):
         
         # Executamos a ferramenta (ela deve buscar no setor_7)
         # Note: Usamos 'Reator' com R maiusculo para garantir extracao via regex no teste
-        resultado = mem_tool.execute(query="Qual o nivel do Reator?")
+        resultado = await mem_tool.execute(query="Qual o nivel do Reator?")
         
         self.assertIn("Critico", resultado)
         print("DONE: Consciencia de Namespace do Agente validada.")

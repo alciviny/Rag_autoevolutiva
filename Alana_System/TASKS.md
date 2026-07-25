@@ -31,3 +31,4 @@
 ## ⚪ Fase 4: Documentação e Manutenção
 - [ ] **Atualizar README:** Corrigir a árvore de diretórios e instruções de instalação.
 - [ ] **Logs Estruturados:** Garantir que todos os componentes usem o logger unificado.
+- [x] **Script de Validação Docker:** Criar automação de pré-deploy (`scripts/docker_validation.py`). [CONCLUÍDO]

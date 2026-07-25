@@ -1,6 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from .graph_store import GraphStore
+from .vector_store import VectorStore
 from ..inference.llm_engine import LLMEngine
 from ..core.binary_bridge import BinaryBridge
 from ..embeddings.embedder import TextEmbedder
@@ -13,19 +14,29 @@ class GraphIntelligence:
     O 'Cérebro Analítico' da Alana agora focado em lógica, delegando IO para a BinaryBridge.
     """
     
-    def __init__(self, graph_store: GraphStore, llm_engine: LLMEngine, embedder: TextEmbedder):
+    def __init__(self, graph_store: GraphStore, vector_store: VectorStore, llm_engine: LLMEngine, embedder: TextEmbedder, entity_vector_store: Optional[VectorStore] = None):
         self.graph_store = graph_store
+        self.vector_store = vector_store
         self.llm_engine = llm_engine
         self.embedder = embedder
         self.bridge = BinaryBridge("graph_turbo.exe")
+        
+        # Qdrant VectorStore exclusivo para reconciliação de entidades
+        # Dimensão obtida dinamicamente do modelo de embedding
+        self.entity_vector_store = entity_vector_store or VectorStore(
+            collection_name="alana_entities",
+            vector_dim=self.embedder.model.get_sentence_embedding_dimension()
+        )
 
     def get_neighborhood(self, entity_name: str, hops: int = 1, namespace: str = "global") -> str:
         """Explora a vizinhança usando o motor Turbo em Go filtrada por namespace."""
         normalized = self.graph_store.normalize_name(entity_name)
+        
         # Proteção Industrial: Evita carregar grafos massivos em memória
-        edges = self.graph_store.get_all_edges(namespace=namespace)
-        if len(edges) > 5000:
-            logger.warning(f"🚨 Grafo muito grande ({len(edges)} arestas). Performance pode ser degradada. Considere migrar para queries nativas.")
+        edges = self.graph_store.get_all_edges(namespace=namespace, limit=10000)
+        if len(edges) >= 10000:
+            logger.error(f"🚨 Grafo Crítico ({len(edges)} arestas). O carregamento em massa foi interrompido para evitar OOM.")
+            return "Erro: Grafo grande demais para visualização em tempo real. Use queries específicas."
         
         try:
             neighbors = self.bridge.call({
@@ -161,42 +172,55 @@ class GraphIntelligence:
 
     async def reconcile_entity(self, name: str, namespace: str = "global") -> str:
         """
-        Reconciliador Semantico Industrial (Ponto 3 Auditoria).
-        Usa embeddings para encontrar se 'name' ja existe com outro termo.
+        Reconciliador Semântico Industrial (Ponto 3 Auditoria).
+        Usa busca vetorial O(1) no Qdrant para encontrar se 'name' já existe com outro termo,
+        evitando gargalo O(N^2) que ocorria no SQLite iterando em Python.
         """
         normalized = self.graph_store.normalize_name(name)
-        existing_embeddings = self.graph_store.get_all_entity_embeddings(namespace)
-        
-        if not existing_embeddings:
-            # Primeira entidade do namespace, apenas salva e retorna
-            emb = self.embedder.embed_query(normalized)
-            self.graph_store.save_entity_embedding(normalized, emb.tolist(), namespace)
-            return normalized
-
-        # Ja existe esse nome exato?
-        if normalized in existing_embeddings:
-            return normalized
-
-        # Busca similaridade
         new_emb = self.embedder.embed_query(normalized)
-        best_match = None
-        highest_sim = 0.0
-
-        for existing_name, emb_list in existing_embeddings.items():
-            sim = self._cosine_similarity(new_emb, np.array(emb_list))
-            if sim > highest_sim:
-                highest_sim = sim
-                best_match = existing_name
-
-        # Threshold Industrial: 0.92 (ajustado para precisao tecnica)
-        if highest_sim > 0.92:
-            logger.info(f"🔗 Reconciliacao: '{normalized}' unificado a '{best_match}' (Sim: {highest_sim:.4f})")
-            self.graph_store.add_alias(normalized, best_match)
-            return best_match
         
-        # Novo conceito unico
-        self.graph_store.save_entity_embedding(normalized, new_emb.tolist(), namespace)
+        # Busca a entidade mais parecida semanticamente no Qdrant
+        results = self.entity_vector_store.search(
+            query_vector=new_emb,
+            top_k=1,
+            namespace=namespace
+        )
+        
+        if results:
+            best_match = results[0]
+            # Threshold Industrial: 0.92 (ajustado para precisão técnica)
+            if best_match["score"] > 0.92 and best_match.get("entity_name"):
+                matched_name = best_match["entity_name"]
+                if matched_name != normalized:
+                    logger.info(f"🔗 Reconciliacao Semantica (Qdrant): '{normalized}' unificado a '{matched_name}' (Score: {best_match['score']:.4f})")
+                    self.graph_store.add_alias(normalized, matched_name)
+                return matched_name
+                
+        # Novo conceito único: Salva no VectorStore (Qdrant)
+        self.entity_vector_store.upsert_entities(
+            entities=[{"name": normalized, "embedding": new_emb.tolist()}],
+            namespace=namespace
+        )
         return normalized
+
+    async def get_seed_entities(self, query: str, top_k: int = 5, namespace: str = "global") -> List[str]:
+        """
+        True Semantic Graph Entrypoint.
+        Busca os nós mais relevantes matematicamente para iniciar a navegação no Grafo.
+        Desacopla a busca de regras gramaticais e ferramentas lentas (spaCy).
+        """
+        query_emb = self.embedder.embed_query(query)
+        results = self.entity_vector_store.search(
+            query_vector=query_emb,
+            top_k=top_k,
+            namespace=namespace,
+            # Threshold generoso para capturar entidades relacionadas à pergunta
+            score_threshold=0.55 
+        )
+        
+        seeds = [res["entity_name"] for res in results if res.get("entity_name")]
+        logger.info(f"📍 Sementes Semânticas recuperadas via Qdrant: {seeds}")
+        return seeds
 
     async def identify_knowledge_gaps(self, namespace: str = "global") -> List[Dict[str, Any]]:
         """
@@ -293,3 +317,35 @@ class GraphIntelligence:
 
     def _cosine_similarity(self, v1: np.ndarray, v2: np.ndarray) -> float:
         return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+
+    async def detect_document_type(self, sample_text: str) -> str:
+        """
+        Auto-descoberta ultrarrápida do domínio do documento.
+        """
+        if not sample_text or len(sample_text) < 10:
+            return "Tecnologia e Negócios"
+            
+        system_prompt = (
+            "Você é um Classificador de Documentos Ultrarrápido. "
+            "Sua única função é ler as primeiras linhas de um arquivo e classificar o 'Domínio' dele em no máximo 3 palavras. "
+            "Exemplos: 'Currículo Profissional', 'Contrato Jurídico', 'Relatório Financeiro', 'Prontuário Médico', 'Documentação de Software', 'Artigo Científico', 'Receita Culinária'."
+            "Responda APENAS com o domínio, sem explicações."
+        )
+        
+        # Pega os primeiros 1500 caracteres (mais que suficiente para inferir o domínio)
+        snippet = sample_text[:1500]
+        
+        try:
+            response = await self.llm_engine.generate_answer(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"TEXTO:\n{snippet}"}
+                ],
+                temperature=0.0
+            )
+            domain = response.strip(' "\'\n.').title()
+            logger.info(f"🕵️ Domínio do Documento Detectado Automagicamente: {domain}")
+            return domain
+        except Exception as e:
+            logger.warning(f"Falha ao detectar domínio (fallback para padrão): {e}")
+            return "Tecnologia e Negócios"

@@ -16,7 +16,7 @@ from alana_system.agent.tools.memory_tool import MemoryTool
 patch('alana_system.inference.llm_engine.LLMEngine').start()
 patch('alana_system.embeddings.embedder.TextEmbedder').start()
 
-class TestAgentSystem(unittest.TestCase):
+class TestAgentSystem(unittest.IsolatedAsyncioTestCase):
     
     def setUp(self):
         # Mocks de depend\u00eancias
@@ -35,50 +35,53 @@ class TestAgentSystem(unittest.TestCase):
             graph_intelligence=self.mock_intelligence
         )
         
-        # Verifica se as ferramentas essenciais est\u00e3o registradas
-        self.assertIn("write_code", engine.tools)
-        self.assertIn("python_runner", engine.tools)
-        self.assertIn("consult_memory", engine.tools)
-        self.assertIn("research", engine.tools)
-        self.assertIn("autonomous_analyst", engine.tools)
-        self.assertIn("validate_theory", engine.tools)
+        # Verifica se as ferramentas essenciais estão registradas
+        tools = engine.registry.list_tools()
+        self.assertIn("write_code", tools)
+        self.assertIn("python_runner", tools)
+        self.assertIn("consult_memory", tools)
+        self.assertIn("research", tools)
+        self.assertIn("autonomous_analyst", tools)
+        self.assertIn("validate_theory", tools)
         
-    def test_analyst_tool_execution(self):
-        """Testa se a ferramenta de analista chama os m\u00e9todos corretos da intelig\u00eancia."""
+    async def test_analyst_tool_execution(self):
+        """Testa se a ferramenta de analista chama os métodos corretos da inteligência."""
         tool = AutonomousAnalystTool(self.mock_intelligence)
         
-        # Simula retorno da intelig\u00eancia
-        self.mock_intelligence.analyze_patterns.return_value = {
+        from unittest.mock import AsyncMock
+        self.mock_intelligence.analyze_patterns = AsyncMock(return_value={
             "status": "success",
             "insights": ["Padr\u00e3o X detectado"],
             "authorities": [("Node1", 0.5)],
             "clusters_count": 2
-        }
+        })
         
-        result = tool.execute(mode="patterns")
-        self.assertIn("RELAT\u00d3RIO DE AUDITORIA", result)
+        result = await tool.execute(mode="patterns")
+        self.assertIn("RELATÓRIO DE AUDITORIA", result)
         self.mock_intelligence.analyze_patterns.assert_called_once()
 
-    def test_theory_validation_logic(self):
-        """Testa o fluxo da ferramenta de valida\u00e7\u00e3o de teoria."""
+    async def test_theory_validation_logic(self):
+        """Testa o fluxo da ferramenta de validação de teoria."""
         tool = TheoryValidationTool()
         
         # Mock dos componentes internos
+        from unittest.mock import AsyncMock
         tool.writer = MagicMock()
         tool.runner = MagicMock()
-        tool.runner.execute.return_value = "Simula\u00e7\u00e3o rodou OK"
+        tool.writer.execute = AsyncMock(return_value="OK")
+        tool.runner.execute = AsyncMock(return_value="Simulação rodou OK")
         
-        result = tool.execute(
+        result = await tool.execute(
             theory="A gravidade existe",
             simulation_code="print('Gravidade OK')"
         )
         
-        self.assertIn("PROTOCOLO DE VALIDA\u00c7\u00c3O CIENT\u00cdFICA", result)
-        self.assertIn("Simula\u00e7\u00e3o rodou OK", result)
+        self.assertIn("PROTOCOLO DE VALIDAÇÃO CIENTÍFICA", result)
+        self.assertIn("Simulação rodou OK", result)
         # Verifica se injetou o helper
         tool.writer.execute.assert_called_once()
         saved_code = tool.writer.execute.call_args[0][1]
-        self.assertIn("import alana_helper", saved_code)
+        self.assertIn("import alana_lab", saved_code)
 
     def test_research_tool_dependency_injection(self):
         """Verifica se a ResearchTool n\u00e3o quebra com inje\u00e7\u00e3o de depend\u00eancia."""
