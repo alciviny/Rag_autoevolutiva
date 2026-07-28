@@ -83,7 +83,7 @@ app.add_middleware(
 )
 
 # 6. Inclusão de Rotas (Sistemas Modulares)
-from alana_system.api.routes import admin, chat, ingestion, agent, system
+from alana_system.api.routes import admin, chat, ingestion, agent, system, missions
 from alana_system.iot.router import iot_router
 
 app.include_router(admin.router, prefix="/api")
@@ -92,6 +92,7 @@ app.include_router(ingestion.router, prefix="/api")
 app.include_router(agent.router) # O Agent usa websockets nativamente
 app.include_router(iot_router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+app.include_router(missions.router, prefix="/api")
 
 # 7. Ciclo de Vida e Arquivos Estáticos
 # Servir arquivos de saída e frontend compilado (Vite dist)

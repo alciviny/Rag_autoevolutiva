@@ -108,7 +108,9 @@ class LLMEngine:
         temperature: float = 0.1,
         system_prompt: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        stream: bool = False
+        stream: bool = False,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = "auto"
     ) -> Any:
         """
         Gera uma resposta assíncrona com suporte a retentativas e modo JSON.
@@ -124,6 +126,11 @@ class LLMEngine:
             "max_tokens": 8192 if (metadata and metadata.get("deep_mode")) else 4096,
             "timeout": int(os.getenv("LLM_TIMEOUT", "300"))
         }
+
+        if tools:
+            kwargs["tools"] = tools
+            if tool_choice:
+                kwargs["tool_choice"] = tool_choice
 
         # Modo JSON nativo
         if metadata and metadata.get("force_json"):
@@ -143,8 +150,18 @@ class LLMEngine:
                     response = await self.router.acompletion(**kwargs)
                     duration = time.perf_counter() - start_time
                     
-                    answer = response.choices[0].message.content.strip()
                     modelo_usado = response.model if hasattr(response, "model") else "Desconhecido"
+                    
+                    # Se estivermos usando function calling nativo, retornamos o objeto completo
+                    if tools:
+                        logger.info(f"✅ LLM Sucesso (Function Calling) | Usou: {modelo_usado} | ⏱️ {duration:.2f}s")
+                        return response
+
+                    answer = response.choices[0].message.content
+                    if answer:
+                        answer = answer.strip()
+                    else:
+                        answer = ""
                     logger.info(f"✅ LLM Sucesso | Usou: {modelo_usado} | ⏱️ {duration:.2f}s")
                     return answer
 

@@ -46,16 +46,4 @@ export class AgentSocket {
             this.callbacks.onClose();
         };
     }
-
-    public approve() {
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify({ action: 'approve' }));
-        }
-    }
-
-    public reject() {
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.socket.send(JSON.stringify({ action: 'reject' }));
-        }
-    }
 }

@@ -5,6 +5,7 @@ type TabCallbacks = {
     onLoadTelemetry: () => void;
     onLoadSpatial: () => void;
     onLoadExperiences: () => void;
+    onLoadReports: () => void;
 };
 
 export const setupTabs = (callbacks: TabCallbacks) => {
@@ -26,6 +27,8 @@ export const setupTabs = (callbacks: TabCallbacks) => {
             callbacks.onLoadSpatial();
         } else if (tabId === 'experiences') {
             callbacks.onLoadExperiences();
+        } else if (tabId === 'reports') {
+            callbacks.onLoadReports();
         }
     };
 

@@ -28,7 +28,10 @@ class AutonomousAnalystTool(BaseTool):
                 analysis = await self.intelligence.analyze_patterns()
                 
                 insights = "\n".join([f"- {i}" for i in analysis.get("insights", [])])
-                authorities = ", ".join([f"{n} ({v:.2f})" for n, v in analysis.get("authorities", [])])
+                
+                # LIMITADOR DE SEGURANÇA (TOP 10) para evitar estouro de tokens
+                top_authorities = analysis.get("authorities", [])[:10]
+                authorities = ", ".join([f"{n} ({v:.2f})" for n, v in top_authorities])
                 
                 return (
                     f"--- RELATÓRIO DE AUDITORIA DE PADRÕES ---\n\n"

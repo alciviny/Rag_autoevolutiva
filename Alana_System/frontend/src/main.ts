@@ -8,7 +8,9 @@ import {
     fetchGraphData, 
     fetchGraphFiles,
     uploadIngestionFile, 
-    sendVoiceCommandApi 
+    sendVoiceCommandApi,
+    fetchMissions,
+    fetchMissionReport
 } from './api/restClient';
 import { getEl, appendTerminalLine, showFeedbackResult } from './ui/domUtils';
 import { setupTabs } from './ui/tabs';
@@ -31,10 +33,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const agentDisplay = getEl('agent-display');
     const agentThought = getEl('agent-thought');
     const agentTerminal = getEl('agent-terminal');
-    const approvalPanel = getEl('approval-panel');
-    const approveBtn = getEl('approve-btn');
-    const rejectBtn = getEl('reject-btn');
-    const approvalText = getEl('approval-text');
     const voiceBtn = getEl('voice-btn');
     const systemTasksList = getEl('system-tasks-list');
     const namespaceSelect = getEl<HTMLSelectElement>('namespace-select');
@@ -75,12 +73,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- Tabs ---
     setupTabs({
         onLoadGraph: loadGraph,
         onLoadTelemetry: loadTelemetry,
         onLoadSpatial: loadSpatial,
-        onLoadExperiences: loadExperiences
+        onLoadExperiences: loadExperiences,
+        onLoadReports: loadReports
     });
 
     // --- Graph & Data Loaders ---
@@ -185,6 +183,90 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { console.error(e); }
     }
 
+    // --- Reports Loaders ---
+    async function loadReports() {
+        const folderList = getEl('missions-folder-list');
+        folderList.innerHTML = '<div class="empty-jobs">Carregando relatórios...</div>';
+        try {
+            const data = await fetchMissions(currentNamespace);
+            if (!data.missions || data.missions.length === 0) {
+                folderList.innerHTML = '<div class="empty-jobs">Nenhum relatório encontrado.</div>';
+                return;
+            }
+            folderList.innerHTML = data.missions.map((m: any) => `
+                <div class="system-task-item" style="cursor: pointer;" data-id="${m.id}">
+                    <div class="task-meta">
+                        <h4>📁 ${new Date(m.timestamp).toLocaleString()}</h4>
+                        <span>${m.mission.substring(0, 50)}...</span>
+                    </div>
+                </div>
+            `).join('');
+
+            // Adicionar evento de clique em cada pasta
+            folderList.querySelectorAll('.system-task-item').forEach(el => {
+                el.addEventListener('click', async (e) => {
+                    const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+                    if (id) {
+                        await loadReportDetails(id);
+                        // Highlight selected
+                        folderList.querySelectorAll('.system-task-item').forEach(i => (i as HTMLElement).style.borderLeft = "none");
+                        (e.currentTarget as HTMLElement).style.borderLeft = "3px solid var(--accent-primary)";
+                    }
+                });
+            });
+        } catch (e) { console.error(e); }
+    }
+
+    async function loadReportDetails(id: string) {
+        const reportBody = getEl('report-content-body');
+        reportBody.innerHTML = '<div class="empty-artifacts">Carregando detalhes...</div>';
+        try {
+            const data = await fetchMissionReport(id, currentNamespace);
+            reportBody.innerHTML = `
+                <h3 style="margin-top: 0;">Objetivo</h3>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.mission}</p>
+                
+                <h3 style="margin-top: 15px;">Plano de Ação</h3>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.plan}</p>
+                
+                <h3 style="margin-top: 15px;">Solução Implementada (Engenharia)</h3>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.solution}</p>
+                
+                <h3 style="margin-top: 15px;">Parecer da Auditoria</h3>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.audit}</p>
+            `;
+        } catch (e) {
+            reportBody.innerHTML = '<div class="empty-artifacts">Erro ao carregar relatório.</div>';
+            console.error(e);
+        }
+    }
+
+    async function loadQuickReport() {
+        try {
+            const data = await fetchMissions(currentNamespace);
+            if (data.missions && data.missions.length > 0) {
+                // Pega a primeira missão (mais recente)
+                const latestMissionId = data.missions[0].id;
+                const report = await fetchMissionReport(latestMissionId, currentNamespace);
+                
+                const quickCard = getEl('mission-quick-report');
+                const quickContent = getEl('quick-report-content');
+                if (!quickCard || !quickContent) return;
+                
+                quickCard.style.display = 'block';
+                quickContent.innerHTML = `
+                    <h3 style="margin-top: 0; font-size: 14px; color: var(--text-primary);">Parecer do Auditor</h3>
+                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">${report.audit}</p>
+                    
+                    <h3 style="font-size: 14px; color: var(--text-primary); margin-top: 15px;">Solução de Engenharia</h3>
+                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); max-height: 400px; overflow-y: auto;">${report.solution}</p>
+                `;
+            }
+        } catch(e) {
+            console.error("Failed to load quick report", e);
+        }
+    }
+
     getEl('refresh-graph-btn')?.addEventListener('click', loadGraph);
 
     // --- Ingestion (Drag & Drop) ---
@@ -255,12 +337,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     Object.values(toolIndicators).forEach(t => t?.classList.remove('active'));
                     appendTerminalLine(agentTerminal, 'result', data.result || '');
                     break;
-                case 'awaiting_approval':
-                    approvalText.textContent = `Autorizar: ${data.command}?`;
-                    approvalPanel.classList.remove('hidden');
-                    break;
                 case 'mission_complete':
                     showFeedbackResult(messageBox, messageText, feedbackArea, progressBar, dropZone, fileInput, 'success', 'Missão Completa');
+                    loadQuickReport(); // Mostra o relatório diretamente na tela de missões
+                    if (getEl('reports-tab').classList.contains('active')) {
+                        loadReports();
+                    }
                     break;
             }
         },
@@ -275,6 +357,10 @@ document.addEventListener('DOMContentLoaded', () => {
         agentThought.textContent = 'Iniciando...';
         agentTerminal.innerHTML = '';
         appendTerminalLine(agentTerminal, 'system', 'Conectando...', '> ');
+        
+        // Esconde o relatório rápido da missão anterior
+        const quickCard = getEl('mission-quick-report');
+        if (quickCard) quickCard.style.display = 'none';
 
         runMissionBtn.disabled = true;
         agentSocket.connect(mission);
@@ -284,16 +370,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const mission = missionInput.value.trim();
         if (!mission) return alert('Descreva a missão.');
         startAgentMission(mission);
-    });
-
-    approveBtn.addEventListener('click', () => {
-        agentSocket.approve();
-        approvalPanel.classList.add('hidden');
-    });
-
-    rejectBtn.addEventListener('click', () => {
-        agentSocket.reject();
-        approvalPanel.classList.add('hidden');
     });
 
     // --- Audio Recorder ---

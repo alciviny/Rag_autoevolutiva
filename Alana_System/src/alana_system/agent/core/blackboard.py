@@ -1,6 +1,6 @@
 import logging
 import json
-import os
+import asyncio
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -39,8 +39,8 @@ class MissionBlackboard:
         self.technical_notes[key] = value
         self._save()
 
-    def _save(self):
-        """Persiste o estado no disco."""
+    def _save_sync(self):
+        """Metodo bloqueante original de IO."""
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -53,6 +53,16 @@ class MissionBlackboard:
                 json.dump(data, f, indent=4, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Erro ao salvar Blackboard: {e}")
+
+    def _save(self):
+        """Persiste o estado no disco sem bloquear o Event Loop principal."""
+        try:
+            loop = asyncio.get_running_loop()
+            # Envia a gravação do disco para uma thread pool separada
+            loop.run_in_executor(None, self._save_sync)
+        except RuntimeError:
+            # Fallback se não houver event loop (ex: instanciado fora do fluxo async)
+            self._save_sync()
 
     def _load(self):
         """Carrega o estado do disco se existir."""

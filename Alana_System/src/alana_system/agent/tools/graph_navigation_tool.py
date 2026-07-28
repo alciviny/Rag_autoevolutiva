@@ -18,8 +18,24 @@ class NavigateGraphTool(BaseTool):
         try:
             # Garante que hops seja int
             hops = int(hops)
-            result = self.intelligence.get_neighborhood(entity, hops)
-            return f"[GRAFO]: Explorando vizinhança de '{entity}'\n{result}"
+            ns = getattr(self, "current_namespace", "global")
+            
+            # Tenta encontrar o nó mais próximo usando Similaridade Vetorial (Qdrant)
+            closest_seeds = await self.intelligence.get_seed_entities(entity, top_k=1, namespace=ns)
+            
+            if closest_seeds:
+                best_match = closest_seeds[0]
+                result = self.intelligence.get_neighborhood(best_match, hops, namespace=ns)
+                
+                if best_match.lower() != entity.lower():
+                    return f"[GRAFO]: Explorando vizinhança de '{best_match}' (match semântico para '{entity}')\n{result}"
+                else:
+                    return f"[GRAFO]: Explorando vizinhança de '{best_match}'\n{result}"
+            else:
+                # Fallback exato
+                result = self.intelligence.get_neighborhood(entity, hops, namespace=ns)
+                return f"[GRAFO]: Explorando vizinhança de '{entity}'\n{result}"
+                
         except Exception as e:
             logger.error(f"Erro na NavigateGraphTool: {e}")
             return f"[ERRO DE NAVEGAÇÃO]: {str(e)}"

@@ -18,7 +18,6 @@ async def agent_websocket(websocket: WebSocket):
     logger.info(f"🔌 WebSocket Agent Conectado | TraceID: {trace_id}")
     
     orchestrator = websocket.app.state.orchestrator
-    approval_queue = asyncio.Queue()
     current_mission_task = None
 
     async def stream_event(event_type: str, data: dict):
@@ -46,21 +45,23 @@ async def agent_websocket(websocket: WebSocket):
 
                 logger.info(f"🎯 Nova Missao [{namespace}]: {mission}")
                 
-                # Dispara o Orquestrador Industrial (H-4 Fix: Passando a fila de aprovacao)
+                # Dispara o Orquestrador Industrial
                 current_mission_task = asyncio.create_task(
                     orchestrator.run_complex_mission(
                         mission=mission, 
                         namespace=namespace,
-                        callback=stream_event,
-                        approval_queue=approval_queue
+                        callback=stream_event
                     )
                 )
             
-            # Resposta de Autorizacao: { "action": "approve" }
-            elif "action" in message:
-                action = message.get("action")
-                await approval_queue.put(action)
-                logger.info(f"🚦 Autorizacao recebida e enfileirada: {action}")
+                # Dispara o Orquestrador Industrial
+                current_mission_task = asyncio.create_task(
+                    orchestrator.run_complex_mission(
+                        mission=mission, 
+                        namespace=namespace,
+                        callback=stream_event
+                    )
+                )
                 
     except WebSocketDisconnect:
         logger.info("🔌 WebSocket Agent desconectado")

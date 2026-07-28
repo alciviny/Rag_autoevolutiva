@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import uuid
 from .base_tool import BaseTool
 from .code_runners.python_runner import PythonRunnerTool
 from .file_system import WriteCodeTool
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 class TheoryValidationTool(BaseTool):
     name = "validate_theory"
     description = (
-        "Protocolo Cient\u00edfico S\u00eanior. Valida uma teoria técnica atrav\u00e9s de simula\u00e7\u00e3o e confronto de dados. "
+        "Protocolo Científico Sênior. Valida uma teoria técnica através de simulação e confronto de dados. "
         "Argumentos: 'theory' (str), 'simulation_code' (str)."
     )
     
@@ -22,14 +23,10 @@ class TheoryValidationTool(BaseTool):
         """
         Executa o ciclo: Hipótese -> Experimento -> Verificação.
         """
-        filename = "experiment_validation.py"
+        experiment_id = str(uuid.uuid4())[:8]
+        filename = f"experiment_{experiment_id}.py"
         
-        # 1. Prepara o ambiente de laboratório
-        # Injeta o import do helper se não existir
-        if "import alana_lab" not in simulation_code:
-            simulation_code = "import alana_lab\n\n" + simulation_code
-            
-        logger.info(f"🔬 Alana iniciando validação de teoria: {theory[:50]}...")
+        logger.info(f"🔬 Alana iniciando validação de teoria (Exp: {experiment_id}): {theory[:50]}...")
         
         # 2. Escreve o código
         write_res = await self.writer.execute(filename, simulation_code)

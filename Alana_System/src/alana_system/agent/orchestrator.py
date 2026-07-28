@@ -1,5 +1,9 @@
 import asyncio
 import logging
+import json
+from datetime import datetime
+import uuid
+import os
 from typing import Any, Optional, Callable, Dict, List, Tuple
 from dataclasses import dataclass
 
@@ -40,11 +44,10 @@ class MultiAgentOrchestrator:
         self, 
         mission: str, 
         namespace: str = "global", 
-        callback: Callable = None,
-        approval_queue: asyncio.Queue = None
+        callback: Callable = None
     ):
         """
-        Executa o fluxo de trabalho industrial: Planejar -> Aprovar -> Pesquisar -> Resolver -> Auditar.
+        Executa o fluxo de trabalho industrial autonômo: Planejar -> Pesquisar -> Resolver -> Auditar.
         """
         try:
             state = MissionState(objective=mission, namespace=namespace)
@@ -60,35 +63,24 @@ class MultiAgentOrchestrator:
                     past_lessons = "\n".join([f"- {e['mission_name']}: {e['winning_strategy']}" for e in experiences])
                     await self._emit_thought("Orchestrator", f"Encontrei {len(experiences)} lições relevantes do passado.", callback)
 
-            state.plan = await self._plan_mission(mission, past_lessons)
+            plan_result = await self._plan_mission(mission, past_lessons)
+            state.plan = plan_result.get("plan", "1. Executar missão.")
+            requires_research = plan_result.get("requires_internal_research", True)
 
-            # 2. HUMAN-IN-THE-LOOP (H-4 Fix)
-            if approval_queue:
-                await self._emit_thought("Orchestrator", "Aguardando aprovação humana para o plano...", callback)
-                if callback:
-                    await callback("awaiting_approval", {"command": "Executar Plano de Missão"})
-                
-                # Aguarda resposta da fila
-                try:
-                    action = await asyncio.wait_for(approval_queue.get(), timeout=300) # 5 min timeout
-                    if action == "abort":
-                        await self._emit_thought("Orchestrator", "Missão abortada pelo usuário.", callback)
-                        return {"status": "aborted"}
-                    logger.info("✅ Missão aprovada pelo usuário.")
-                except asyncio.TimeoutError:
-                    await self._emit_thought("Orchestrator", "Tempo de espera esgotado. Abortando por segurança.", callback)
-                    return {"status": "timeout"}
-
-            # 3. CICLO DE EXECUÇÃO RECURSIVO (Stark Mode)
+            # 2. CICLO DE EXECUÇÃO RECURSIVO (Stark Mode)
             max_retries = 3
             for attempt in range(1, max_retries + 1):
                 await self._emit_thought("Orchestrator", f"Iniciando Ciclo de Engenharia {attempt}/{max_retries}...", callback)
                 
-                # Librarian: Especialista em RAG e Consolidação (Elite Mode)
-                await self._emit_thought("Librarian", "Pesquisando e consolidando fichas técnicas...", callback)
-                search_res = await self.query_engine.query(mission, namespace=namespace)
-                state.internal_knowledge = search_res.get("context_text", "")
-                state.technical_fact_sheet = await self._librarian_work(state.internal_knowledge, mission)
+                # Librarian: Só pesquisa se necessário
+                if requires_research:
+                    await self._emit_thought("Librarian", "Pesquisando e consolidando fichas técnicas...", callback)
+                    search_res = await self.query_engine.query(mission, namespace=namespace)
+                    state.internal_knowledge = search_res.get("context_text", "")
+                    state.technical_fact_sheet = await self._librarian_work(state.internal_knowledge, mission)
+                else:
+                    await self._emit_thought("Librarian", "Pesquisa interna ignorada por não ser necessária.", callback)
+                    state.technical_fact_sheet = "Nenhuma ficha técnica necessária para esta missão."
                 
                 # Engineer: Execução Técnica Focada
                 await self._emit_thought("Engineer", "Iniciando implementação baseada na ficha técnica...", callback)
@@ -100,7 +92,12 @@ class MultiAgentOrchestrator:
 
                 # 4. AUDITOR: Verificação de Qualidade Stark
                 await self._emit_thought("Auditor", "Analisando rigorosamente a solução...", callback)
-                audit_data = await self._audit_solution(state.proposed_solution, mission)
+                audit_data = await self._audit_solution(
+                    solution=state.proposed_solution, 
+                    original_mission=mission,
+                    plan=state.plan,
+                    technical_fact_sheet=state.technical_fact_sheet
+                )
                 state.audit_report = audit_data.get("reason", "Análise inconclusiva.")
                 
                 if audit_data.get("status") == "PASS":
@@ -116,25 +113,70 @@ class MultiAgentOrchestrator:
 
             await self._emit_thought("Orchestrator", "Missão Industrial Finalizada.", callback)
             
-            return {
+            # Persist the mission report
+            mission_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
+            mission_dir = f"data/missions/{namespace}"
+            os.makedirs(mission_dir, exist_ok=True)
+            report_data = {
+                "id": mission_id,
+                "mission": mission,
                 "solution": state.proposed_solution,
                 "audit": state.audit_report,
                 "plan": state.plan,
-                "namespace": namespace
+                "namespace": namespace,
+                "timestamp": datetime.now().isoformat()
             }
+            with open(os.path.join(mission_dir, f"{mission_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(report_data, f, ensure_ascii=False, indent=2)
+
+            if callback:
+                await callback("mission_complete", {"message": "Missão Industrial Auditada e Finalizada."})
+
+            return report_data
         except Exception as e:
             logger.exception(f"💥 Falha CRÍTICA na missão [{namespace}]: {e}")
             await self._emit_thought("Orchestrator", f"❌ Falha crítica no sistema: {str(e)}", callback)
             return {"status": "error", "message": str(e)}
 
-    async def _plan_mission(self, mission: str, past_lessons: str = "") -> str:
+    async def _plan_mission(self, mission: str, past_lessons: str = "") -> Dict[str, Any]:
         messages = [
-            {"role": "system", "content": f"""Você é o Gerente do Lab Alana. Crie um plano técnico de 3 passos para a missão.
-            Seja pragmático e focado em engenharia industrial.
+            {"role": "system", "content": f"""Você é o Gerente do Lab Alana. Analise a missão e decida se precisamos pesquisar o banco de dados interno (RAG) para encontrar manuais ou código da empresa, ou se é apenas uma missão matemática/geral.
             {f'LIÇÕES DO PASSADO (APRENDA COM ISSO): {past_lessons}' if past_lessons else ''}"""},
             {"role": "user", "content": mission}
         ]
-        return await self.llm.generate_answer(messages)
+        
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "submit_plan",
+                "description": "Submete o plano estratégico da missão.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "plan": {
+                            "type": "string",
+                            "description": "O plano técnico de 3 passos."
+                        },
+                        "requires_internal_research": {
+                            "type": "boolean",
+                            "description": "True se a missão precisar consultar dados específicos do projeto atual/banco de dados."
+                        }
+                    },
+                    "required": ["plan", "requires_internal_research"]
+                }
+            }
+        }]
+        
+        try:
+            resp = await self.llm.generate_answer(messages, tools=tools, tool_choice={"type": "function", "function": {"name": "submit_plan"}})
+            msg = resp.choices[0].message
+            if getattr(msg, "tool_calls", None):
+                args = json.loads(msg.tool_calls[0].function.arguments)
+                return args
+            return {"plan": "1. Executar missão", "requires_internal_research": True}
+        except Exception as e:
+            logger.error(f"Erro no planejamento: {e}")
+            return {"plan": "Plano padrão", "requires_internal_research": True}
 
     async def _librarian_work(self, raw_knowledge: str, mission: str) -> str:
         """O Bibliotecário destila o RAG em uma Ficha Técnica estruturada."""
@@ -171,28 +213,53 @@ class MultiAgentOrchestrator:
             namespace=namespace
         )
 
-    async def _audit_solution(self, solution: str, original_mission: str) -> Dict[str, Any]:
-        """Audita a solução usando um contrato JSON rigoroso."""
-        import json
+    async def _audit_solution(self, solution: str, original_mission: str, plan: str = "", technical_fact_sheet: str = "") -> Dict[str, Any]:
+        """Audita a solução usando Function Calling rigoroso."""
         messages = [
-            {"role": "system", "content": """Você é o Auditor de Qualidade Sênior da Alana.
+            {"role": "system", "content": f"""Você é o Auditor de Qualidade Sênior da Alana.
             Sua análise deve ser impiedosa. Procure por:
             - Falhas de lógica, bugs de segurança ou inconsistências.
             - Desvios do objetivo original ou do plano aprovado.
+            - Violação das regras estipuladas na Ficha Técnica.
             
-            RESPONDA APENAS UM JSON NO FORMATO:
-            {
-                "status": "PASS" ou "FAIL",
-                "reason": "Sua análise técnica detalhada aqui."
-            }"""},
+            PLANO DE AÇÃO DEFINIDO:
+            {plan}
+            
+            RESTRIÇÕES (FICHA TÉCNICA):
+            {technical_fact_sheet}"""},
             {"role": "user", "content": f"Missão: {original_mission}\nSolução Proposta: {solution}"}
         ]
         
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "submit_audit",
+                "description": "Submete o veredito final da auditoria.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["PASS", "FAIL"],
+                            "description": "PASS se aprovado, FAIL se reprovado."
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Justificativa detalhada."
+                        }
+                    },
+                    "required": ["status", "reason"]
+                }
+            }
+        }]
+        
         try:
-            resp = await self.llm.generate_answer(messages, metadata={"force_json": True})
-            # Limpeza básica caso o LLM injete markdown
-            resp = resp.strip().strip("`").replace("json\n", "").strip()
-            return json.loads(resp)
+            resp = await self.llm.generate_answer(messages, tools=tools, tool_choice={"type": "function", "function": {"name": "submit_audit"}})
+            msg = resp.choices[0].message
+            if getattr(msg, "tool_calls", None):
+                args = json.loads(msg.tool_calls[0].function.arguments)
+                return args
+            return {"status": "FAIL", "reason": "LLM não respeitou o contrato de tool calling."}
         except Exception as e:
             logger.error(f"Falha ao processar resposta do Auditor: {e}")
             return {"status": "FAIL", "reason": f"Erro interno no motor de auditoria: {str(e)}"}
@@ -207,6 +274,9 @@ class MultiAgentOrchestrator:
         async def wrapped(event_type: str, data: Any):
             if event_type == "thought":
                 await original_callback("thought", {"agent": "Engineer", "content": data["content"]})
+            elif event_type == "mission_complete":
+                # O Orquestrador bloqueia o mission_complete do engenheiro para não encerrar o frontend cedo
+                pass
             else:
                 await original_callback(event_type, data)
         return wrapped

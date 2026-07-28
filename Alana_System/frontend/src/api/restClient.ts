@@ -57,3 +57,15 @@ export const sendVoiceCommandApi = async (blob: Blob, namespace: string): Promis
     }
     return res.json();
 };
+
+export const fetchMissions = async (namespace: string) => {
+    const res = await fetch(`/api/missions?namespace=${namespace}`);
+    if (!res.ok) throw new Error('Failed to fetch missions');
+    return res.json();
+};
+
+export const fetchMissionReport = async (id: string, namespace: string) => {
+    const res = await fetch(`/api/missions/${id}?namespace=${namespace}`);
+    if (!res.ok) throw new Error('Failed to fetch mission report');
+    return res.json();
+};
