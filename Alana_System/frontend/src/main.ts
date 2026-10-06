@@ -12,11 +12,22 @@ import {
     fetchMissions,
     fetchMissionReport
 } from './api/restClient';
-import { getEl, appendTerminalLine, showFeedbackResult } from './ui/domUtils';
+import { getEl, appendTerminalLine, showFeedbackResult, escapeHtml } from './ui/domUtils';
 import { setupTabs } from './ui/tabs';
 import { GraphRenderer } from './ui/graphRenderer';
 import { setupDragAndDrop } from './ui/dragDrop';
 import { AudioRecorder } from './media/audioRecorder';
+
+const safeArtifactUrl = (value: unknown): string => {
+    try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return url.origin === window.location.origin && url.pathname.startsWith('/data/artifacts/')
+            ? `${url.pathname}${url.search}`
+            : '#';
+    } catch {
+        return '#';
+    }
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const dropZone = getEl('drop-zone');
@@ -62,6 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentNamespace = namespaceSelect.value;
     const graphRenderer = new GraphRenderer('knowledge-graph');
+    let graphLoadGeneration = 0;
 
     namespaceSelect.addEventListener('change', () => {
         currentNamespace = namespaceSelect.value;
@@ -82,10 +94,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Graph & Data Loaders ---
-    async function loadGraphFiles() {
+    async function loadGraphFiles(namespace: string, generation: number) {
         if (!graphFileSelect) return;
         try {
-            const data = await fetchGraphFiles(currentNamespace);
+            const data = await fetchGraphFiles(namespace);
+            if (generation !== graphLoadGeneration) return;
             const currentVal = graphFileSelect.value;
             graphFileSelect.innerHTML = '<option value="">Todos os Documentos</option>';
             if (data.files) {
@@ -107,13 +120,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadGraph() {
+        const generation = ++graphLoadGeneration;
+        const namespace = currentNamespace;
         graphRenderer.showLoading();
         try {
-            await loadGraphFiles();
+            await loadGraphFiles(namespace, generation);
+            if (generation !== graphLoadGeneration) return;
             const selectedFile = graphFileSelect?.value || '';
-            const data = await fetchGraphData(currentNamespace, selectedFile);
-            graphRenderer.render(data);
+            const data = await fetchGraphData(namespace, selectedFile);
+            if (generation === graphLoadGeneration) await graphRenderer.render(data);
         } catch (e) {
+            if (generation !== graphLoadGeneration) return;
             console.error(e);
             graphRenderer.showError();
         }
@@ -124,21 +141,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     async function loadTelemetry() {
-        const container = getEl('telemetry-display');
         try {
             const data = await fetchTelemetry(currentNamespace);
-            if (!data.hubs || data.hubs.length === 0) {
-                container.innerHTML = '<div class="empty-jobs">Aguardando telemetria ativa...</div>';
-                return;
-            }
-            container.innerHTML = data.hubs.map((hub: any) => `
-                <div class="telemetry-card-mini">
-                    <span class="telemetry-label">Conexões: ${hub.total}</span>
-                    <span class="telemetry-value">${hub.entity}</span>
-                    <span class="telemetry-unit">Ativo</span>
-                </div>
-            `).join('');
+            renderTelemetry(data.readings || []);
         } catch (e) { console.error(e); }
+    }
+
+    function renderTelemetry(readings: any[]) {
+        const container = getEl('telemetry-display');
+        if (!readings.length) {
+            container.innerHTML = '<div class="empty-jobs">Nenhuma leitura de sensor registrada.</div>';
+            return;
+        }
+        container.innerHTML = readings.map(reading => `
+            <div class="telemetry-card-mini">
+                <span class="telemetry-label">${escapeHtml(reading.entity_name)}</span>
+                <span class="telemetry-value">${escapeHtml(reading.raw_reading || (reading.value ?? '—'))}</span>
+                <span class="telemetry-unit">${escapeHtml(reading.unit || '')} · ${escapeHtml(reading.timestamp)}</span>
+            </div>
+        `).join('');
     }
 
     async function loadSpatial() {
@@ -151,9 +172,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             container.innerHTML = data.entities.map((ent: any) => `
                 <div class="spatial-node">
-                    <span class="spatial-location">${ent.last_location}</span>
-                    <span class="spatial-name">${ent.name}</span>
-                    <span class="job-footer">Tipo: ${ent.type} | Visto: ${new Date(ent.last_seen).toLocaleTimeString()}</span>
+                <span class="spatial-location">${escapeHtml(ent.last_location)}</span>
+                    <span class="spatial-name">${escapeHtml(ent.name)}</span>
+                    <span class="job-footer">Tipo: ${escapeHtml(ent.type)} | Visto: ${escapeHtml(new Date(ent.last_seen).toLocaleTimeString())}</span>
                 </div>
             `).join('');
         } catch (e) { console.error(e); }
@@ -170,13 +191,13 @@ document.addEventListener('DOMContentLoaded', () => {
             container.innerHTML = data.experiences.map((exp: any) => `
                 <div class="timeline-item">
                     <div class="timeline-header">
-                        <span class="timeline-mission">${exp.mission_name}</span>
-                        <span class="timeline-date">${new Date(exp.timestamp).toLocaleDateString()}</span>
+                        <span class="timeline-mission">${escapeHtml(exp.mission_name)}</span>
+                        <span class="timeline-date">${escapeHtml(new Date(exp.timestamp).toLocaleDateString())}</span>
                     </div>
-                    <p>${exp.task_description}</p>
+                    <p>${escapeHtml(exp.task_description)}</p>
                     <div class="timeline-strategy">
                         <strong>ESTRATÉGIA VENCEDORA:</strong><br>
-                        ${exp.winning_strategy}
+                        ${escapeHtml(exp.winning_strategy)}
                     </div>
                 </div>
             `).join('');
@@ -194,10 +215,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             folderList.innerHTML = data.missions.map((m: any) => `
-                <div class="system-task-item" style="cursor: pointer;" data-id="${m.id}">
+                <div class="system-task-item" style="cursor: pointer;" data-id="${escapeHtml(m.id)}">
                     <div class="task-meta">
                         <h4>📁 ${new Date(m.timestamp).toLocaleString()}</h4>
-                        <span>${m.mission.substring(0, 50)}...</span>
+                    <span>${escapeHtml(String(m.mission || '').substring(0, 50))}...</span>
                     </div>
                 </div>
             `).join('');
@@ -224,16 +245,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await fetchMissionReport(id, currentNamespace);
             reportBody.innerHTML = `
                 <h3 style="margin-top: 0;">Objetivo</h3>
-                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.mission}</p>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${escapeHtml(data.mission)}</p>
                 
                 <h3 style="margin-top: 15px;">Plano de Ação</h3>
-                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.plan}</p>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${escapeHtml(data.plan)}</p>
                 
                 <h3 style="margin-top: 15px;">Solução Implementada (Engenharia)</h3>
-                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.solution}</p>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${escapeHtml(data.solution)}</p>
                 
                 <h3 style="margin-top: 15px;">Parecer da Auditoria</h3>
-                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${data.audit}</p>
+                <p style="white-space: pre-wrap; font-family: monospace; font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); padding: 10px; border-radius: 4px;">${escapeHtml(data.audit)}</p>
             `;
         } catch (e) {
             reportBody.innerHTML = '<div class="empty-artifacts">Erro ao carregar relatório.</div>';
@@ -256,10 +277,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 quickCard.style.display = 'block';
                 quickContent.innerHTML = `
                     <h3 style="margin-top: 0; font-size: 14px; color: var(--text-primary);">Parecer do Auditor</h3>
-                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">${report.audit}</p>
+                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">${escapeHtml(report.audit)}</p>
                     
                     <h3 style="font-size: 14px; color: var(--text-primary); margin-top: 15px;">Solução de Engenharia</h3>
-                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); max-height: 400px; overflow-y: auto;">${report.solution}</p>
+                    <p style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; background: var(--bg-secondary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); max-height: 400px; overflow-y: auto;">${escapeHtml(report.solution)}</p>
                 `;
             }
         } catch(e) {
@@ -302,8 +323,8 @@ document.addEventListener('DOMContentLoaded', () => {
             jobItem.className = 'job-item';
             jobItem.innerHTML = `
                 <div class="job-info">
-                    <span class="job-filename">${job.filename}</span>
-                    <span class="job-badge ${statusClass}">${job.status}</span>
+                    <span class="job-filename">${escapeHtml(job.filename)}</span>
+                    <span class="job-badge ${escapeHtml(statusClass)}">${escapeHtml(job.status)}</span>
                 </div>
                 <div class="job-progress-container">
                     <div class="job-progress-bar" style="width: ${progress}%"></div>
@@ -318,6 +339,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // --- Agent Socket ---
+    let agentMissionActive = false;
     const agentSocket = new AgentSocket({
         onEvent: (event: AgentEvent) => {
             const { type, data } = event;
@@ -338,17 +360,32 @@ document.addEventListener('DOMContentLoaded', () => {
                     appendTerminalLine(agentTerminal, 'result', data.result || '');
                     break;
                 case 'mission_complete':
+                    agentMissionActive = false;
+                    runMissionBtn.textContent = 'INICIAR MISSÃO';
                     showFeedbackResult(messageBox, messageText, feedbackArea, progressBar, dropZone, fileInput, 'success', 'Missão Completa');
                     loadQuickReport(); // Mostra o relatório diretamente na tela de missões
                     if (getEl('reports-tab').classList.contains('active')) {
                         loadReports();
                     }
                     break;
+                case 'mission_failed':
+                    agentMissionActive = false;
+                    runMissionBtn.textContent = 'INICIAR MISSÃO';
+                    showFeedbackResult(messageBox, messageText, feedbackArea, progressBar, dropZone, fileInput, 'error', data.message || 'Missão reprovada na auditoria.');
+                    loadQuickReport();
+                    break;
+                case 'mission_cancelled':
+                    agentMissionActive = false;
+                    runMissionBtn.textContent = 'INICIAR MISSÃO';
+                    showFeedbackResult(messageBox, messageText, feedbackArea, progressBar, dropZone, fileInput, 'error', data.message || 'Missão cancelada.');
+                    break;
             }
         },
         onClose: () => {
-            runMissionBtn.disabled = false;
-            runMissionBtn.textContent = 'NOVA MISSÃO';
+            if (agentMissionActive) {
+                agentMissionActive = false;
+                runMissionBtn.textContent = 'INICIAR MISSÃO';
+            }
         }
     }, currentNamespace);
 
@@ -362,11 +399,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const quickCard = getEl('mission-quick-report');
         if (quickCard) quickCard.style.display = 'none';
 
-        runMissionBtn.disabled = true;
+        agentMissionActive = true;
+        runMissionBtn.textContent = 'CANCELAR MISSÃO';
         agentSocket.connect(mission);
     };
 
     runMissionBtn.addEventListener('click', () => {
+        if (agentMissionActive) {
+            agentSocket.abort();
+            return;
+        }
         const mission = missionInput.value.trim();
         if (!mission) return alert('Descreva a missão.');
         startAgentMission(mission);
@@ -376,9 +418,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const audioRecorder = new AudioRecorder({
         onStart: () => {
             voiceBtn.classList.add('recording');
+            voiceBtn.setAttribute('aria-pressed', 'true');
+            voiceBtn.setAttribute('aria-label', 'Parar gravação de comando');
         },
         onStop: async (blob) => {
             voiceBtn.classList.remove('recording');
+            voiceBtn.setAttribute('aria-pressed', 'false');
+            voiceBtn.setAttribute('aria-label', 'Gravar comando de voz');
             appendTerminalLine(agentTerminal, 'system', 'Processando áudio...', '> ');
             try {
                 const data = await sendVoiceCommandApi(blob, currentNamespace);
@@ -393,6 +439,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         },
         onError: (err) => {
+            voiceBtn.classList.remove('recording');
+            voiceBtn.setAttribute('aria-pressed', 'false');
+            voiceBtn.setAttribute('aria-label', 'Gravar comando de voz');
             alert('Erro ao acessar microfone. Verifique as permissões.');
             console.error(err);
         }
@@ -415,10 +464,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.className = 'system-task-item';
                 item.innerHTML = `
                     <div class="task-meta">
-                        <h4>${task.name}</h4>
-                        <span>ID: ${task.id.split('-')[0]} • Retries: ${task.retries}</span>
+                        <h4>${escapeHtml(task.name)}</h4>
+                        <span>ID: ${escapeHtml(String(task.id || '').split('-')[0])} • Retries: ${escapeHtml(task.retries)}</span>
                     </div>
-                    <div class="status-badge ${task.status}">${task.status}</div>
+                    <div class="status-badge ${escapeHtml(task.status)}">${escapeHtml(task.status)}</div>
                 `;
                 systemTasksList.appendChild(item);
             });
@@ -432,13 +481,15 @@ document.addEventListener('DOMContentLoaded', () => {
             artifacts.forEach(art => {
                 const item = document.createElement('div');
                 item.className = 'artifact-item';
-                const isImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(art.name);
+                const artifactUrl = safeArtifactUrl(art.url);
+                const safeName = escapeHtml(art.name);
+                const isImage = artifactUrl !== '#' && /\.(jpg|jpeg|png|webp|gif)$/i.test(String(art.name));
                 const icon = isImage ? '' : `<div class="file-icon">📄</div>`;
                 item.innerHTML = `
-                    ${isImage ? `<img src="${art.url}" class="artifact-preview" alt="${art.name}">` : icon}
+                    ${isImage ? `<img src="${escapeHtml(artifactUrl)}" class="artifact-preview" alt="${safeName}">` : icon}
                     <div class="artifact-info">
-                        <a href="${art.url}" target="_blank">${art.name}</a>
-                        <div>${(art.size / 1024).toFixed(1)} KB</div>
+                        <a href="${escapeHtml(artifactUrl)}" target="_blank" rel="noopener noreferrer">${safeName}</a>
+                        <div>${escapeHtml((Number(art.size) / 1024 || 0).toFixed(1))} KB</div>
                     </div>
                 `;
                 artifactGallery.appendChild(item);
@@ -447,9 +498,10 @@ document.addEventListener('DOMContentLoaded', () => {
         onJobsUpdate: (jobs) => {
             renderJobs(jobs);
         },
+        onTelemetryUpdate: (readings) => renderTelemetry(readings),
         onLogsUpdate: (logs) => {
             const logTextEl = getEl('log-text');
-            if (logTextEl) logTextEl.innerHTML = logs;
+            if (logTextEl) logTextEl.textContent = String(logs || '').replace(/<br\s*\/?\s*>/gi, '\n');
         },
         onError: (err) => {
             console.error('SSE Stream Error', err);

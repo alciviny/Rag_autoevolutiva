@@ -202,9 +202,14 @@ class QueryEngine:
             context_parts.append("### CONHECIMENTO ESTRUTURADO (MAPA MENTAL DA ALANA):")
             context_parts.append("Os fatos abaixo representam relações lógicas extraídas de documentos técnicos:")
             # Remove duplicatas e formata de forma clara
-            unique_facts = {f"**{f['subject']}** --[{f['relation']}]--> **{f['object']}**" for f in graph_facts}
-            for fact in list(unique_facts)[:20]: # Aumentado para 20
-                context_parts.append(f"- {fact}")
+            unique_facts = {
+                (f["subject"], f["relation"], f["object"], f.get("source_doc"), f.get("page_number"), f.get("evidence", ""))
+                for f in graph_facts
+            }
+            for subject, relation, obj, source, page, evidence in sorted(unique_facts, key=lambda row: tuple(str(value or "") for value in row))[:20]:
+                provenance = f" (fonte: {source or 'desconhecida'}, pág. {page if page is not None else '?'} )"
+                quote = f' | evidência literal: "{evidence}"' if evidence else " | evidência textual indisponível"
+                context_parts.append(f"- **{subject}** --[{relation}]--> **{obj}**{provenance}{quote}")
             context_parts.append("") # Espaçador
 
         if vector_results:

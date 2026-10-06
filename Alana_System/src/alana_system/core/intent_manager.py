@@ -70,12 +70,15 @@ class IntentManager:
                 }
             
             if intent == "SEARCH":
-                res = await self.state.deep_search_agent.perform_deep_search(transcription)
+                res = await self.state.deep_search_agent.perform_deep_search(transcription, namespace=namespace)
                 return {"intent": "SEARCH", "answer": res.get("report"), "source": "web_research"}
             
             if intent == "SAVE":
                 graph_schema = await self.state.query_engine.entity_extractor.extract_graph(transcription)
                 if graph_schema.entities or graph_schema.relations:
+                    intelligence = getattr(self.state.query_engine, "intelligence", None)
+                    if intelligence and hasattr(intelligence, "reconcile_graph"):
+                        await intelligence.reconcile_graph(graph_schema, namespace)
                     self.state.query_engine.graph_store.add_knowledge(graph_schema, source_doc="wearable_voice", page_number=1, namespace=namespace)
                     return {"intent": "SAVE", "answer": "Conhecimento técnico indexado no seu Grafo.", "source": "knowledge_graph"}
             
@@ -107,7 +110,7 @@ class IntentManager:
         if session and any(kw in text for kw in ["próximo", "proximo", "concluí", "concluido", "feito"]):
             step = session.get_current_step()
             if step and step.validation_prompt:
-                last_vision = sensory.get_last_vision()
+                last_vision = sensory.get_last_vision(namespace)
                 if last_vision and "raw_bytes" in last_vision:
                     is_valid = await self.state.vision_processor.validate_compliance(last_vision["raw_bytes"], step.validation_prompt)
                     if not is_valid:
@@ -125,7 +128,7 @@ class IntentManager:
 
     async def _handle_telemetry(self, text: str, namespace: str):
         if any(kw in text for kw in ["registre este valor", "registre o valor", "salve esta medição", "anota aí"]):
-            last_vision = self.state.sensory_manager.get_last_vision()
+            last_vision = self.state.sensory_manager.get_last_vision(namespace)
             if last_vision and "raw_bytes" in last_vision:
                 data = await self.state.vision_processor.extract_telemetry(last_vision["raw_bytes"])
                 if "error" not in data:
@@ -139,7 +142,7 @@ class IntentManager:
     async def _handle_genius(self, text: str, namespace: str):
         # Explainer
         if any(kw in text for kw in ["o que diz aqui", "traduza isso", "explique isso"]):
-            last_vision = self.state.sensory_manager.get_last_vision()
+            last_vision = self.state.sensory_manager.get_last_vision(namespace)
             if last_vision and "raw_bytes" in last_vision:
                 explanation = await self.state.vision_processor.explain_concept(last_vision["raw_bytes"], text)
                 return {"intent": "EXPLAINER", "answer": explanation}
@@ -157,11 +160,11 @@ class IntentManager:
         
         for mode, keywords in genius_keywords.items():
             if any(kw in text for kw in keywords):
-                last_vision = self.state.sensory_manager.get_last_vision()
+                last_vision = self.state.sensory_manager.get_last_vision(namespace)
                 if last_vision:
                     if mode == "synapse":
                         query_engine = self.state.query_engine
-                        rag_context = await query_engine.query(f"O que eu tenho documentado sobre: {last_vision['content']}")
+                        rag_context = await query_engine.query(f"O que eu tenho documentado sobre: {last_vision['content']}", namespace=namespace)
                         prompt = f"O usuario ve: {last_vision['content']}. Contexto: {rag_context}. Faça a sinapse."
                         analysis = await self.state.llm_engine.think(prompt)
                     else:

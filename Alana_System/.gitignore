@@ -32,6 +32,8 @@ secret.json
 # Scripts de teste avulsos na raiz (nao fazem parte do pacote)
 check_free_models.py
 test_*.py
+!tests/test_backend_regressions.py
+!tests/test_document_grounding.py
 teste_*.txt
 validate_docker.bat
 

@@ -38,3 +38,15 @@ func TestNeighbors(t *testing.T) {
 		t.Errorf("Vizinhos incorretos. Esperado %v, obtido %v", expected, result)
 	}
 }
+
+func TestNeighborsMultipleHopsAndCycles(t *testing.T) {
+	engine := NewGraphEngine([]Edge{
+		{From: "A", To: "B"}, {From: "B", To: "C"},
+		{From: "C", To: "A"}, {From: "B", To: "D"},
+	})
+	result := engine.Neighbors("A", 2)
+	expected := []string{"B", "C", "D"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Fatalf("Neighbors(2) = %v; want %v", result, expected)
+	}
+}

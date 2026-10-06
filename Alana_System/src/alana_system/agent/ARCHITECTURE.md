@@ -65,3 +65,6 @@ Sempre que alterar o núcleo do agente, rode a suíte de testes:
 ```bash
 python tests/test_agent_suite.py
 ```
+# Execução de código
+
+As ferramentas Python, Node, C++ e Rust executam código dentro do mesmo host da API e ficam desativadas por padrão. Para uso local controlado, `ALANA_ENABLE_UNSANDBOXED_CODE_EXECUTION=true` libera essa execução; essa opção não oferece isolamento e não deve ser usada em um serviço multiusuário. Antes de expor o backend, substitua-a por workers isolados por missão, sem rede ou segredos e com limites de CPU, memória, disco e saída.

@@ -10,9 +10,10 @@ class KnowledgeStorer:
     Gravador de Inteligencia Externa.
     Extrai entidades de relatorios da web e as persiste no namespace correto.
     """
-    def __init__(self, graph_store: GraphStore, entity_extractor: EntityExtractor):
+    def __init__(self, graph_store: GraphStore, entity_extractor: EntityExtractor, graph_intelligence=None):
         self.graph_store = graph_store
         self.extractor = entity_extractor
+        self.graph_intelligence = graph_intelligence
 
     async def store_report(self, query: str, report: str, namespace: str = "global") -> bool:
         """Processa e salva um relatorio no Grafo de Conhecimento."""
@@ -28,6 +29,9 @@ class KnowledgeStorer:
                 type="Conceito",
                 description=f"Query de busca que originou este relatorio."
             ))
+
+            if self.graph_intelligence:
+                await self.graph_intelligence.reconcile_graph(graph_schema, namespace)
             
             # 3. Persiste no Grafo respeitando o isolamento do projeto
             self.graph_store.add_knowledge(

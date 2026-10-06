@@ -1,27 +1,23 @@
-import subprocess
+import asyncio
 from pathlib import Path
 from ..base_tool import BaseTool
+from ..path_utils import namespace_workspace
 
-import shlex
 
 class TerminalSimulatorTool(BaseTool):
     name = "run_terminal_simulator"
-    description = "Executa um simulador CLI estritamente seguro e isolado (ex: python, gcc, ngspice, wokwi). Argumento: 'command' (str)"
+    description = "Executa o comando de saída seguro 'echo' dentro do workspace atual. Para código, use as ferramentas de execução dedicadas. Argumento: 'command' (str)"
     
     # Lista restrita de binários permitidos para evitar RCE
-    ALLOWED_BINARIES = {"python", "gcc", "g++", "ngspice", "wokwi-cli", "make", "echo"}
+    ALLOWED_BINARIES = {"echo"}
     
     def __init__(self, workspace_path: str = "workspace"):
         self.workspace = Path(workspace_path)
         
-    def execute(self, command: str) -> str:
-        # Isolamento de projeto industrial
-        safe_workspace = self.workspace / self.current_namespace
-        safe_workspace.mkdir(parents=True, exist_ok=True)
-        
+    async def execute(self, command: str) -> str:
         try:
-            # Sanitização contra Injeção de Shell (Evita pipelines maliciosos: "gcc test.c; rm -rf /")
-            args = shlex.split(command)
+            safe_workspace = namespace_workspace(self.workspace, self.current_namespace)
+            args = command.split()
             if not args:
                 return "[FALHA CRÍTICA] Comando vazio."
                 
@@ -29,25 +25,25 @@ class TerminalSimulatorTool(BaseTool):
             if base_bin not in self.ALLOWED_BINARIES:
                 return f"[BLOQUEIO DE SEGURANÇA] O binário '{base_bin}' não está na whitelist autorizada de simuladores. Solicite a criação de uma ferramenta própria se necessário."
             
-            # shell=False garante que metacaracteres (>, <, |, ;) não sejam avaliados
-            result = subprocess.run(
-                args,
-                cwd=safe_workspace,
-                shell=False,
-                capture_output=True,
-                text=True,
-                timeout=45 
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=str(safe_workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+            output, error = stdout.decode(errors="replace"), stderr.decode(errors="replace")
             
-            output = result.stdout
-            error = result.stderr
-            
-            if result.returncode == 0:
+            if process.returncode == 0:
                 return f"[SIMULAÇÃO FINALIZADA]\nLogs:\n{output}"
             else:
                 return f"[FALHA NA SIMULAÇÃO]\nLogs:\n{output}\nErros:\n{error}"
                 
-        except subprocess.TimeoutExpired:
-            return "[FALHA CRÍTICA] A simulação excedeu o tempo máximo de 45 segundos."
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return "[FALHA CRÍTICA] O comando excedeu o limite de 5 segundos."
+        except (ValueError, PermissionError) as e:
+            return f"[BLOQUEIO DE CAMINHO] {e}"
         except Exception as e:
             return f"[ERRO DO SISTEMA] {str(e)}"

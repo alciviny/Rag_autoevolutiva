@@ -44,10 +44,20 @@ class TextChunker:
                         all_chunks.append(self._build_chunk(chunk_text, page.page_number, source_name))
             except Exception as e:
                 logger.error(f"Falha no Chunker Turbo: {e}")
-                # Fallback simples aqui se necessario
+                all_chunks.extend(self._fallback_chunks(page.text, page.page_number, source_name))
                 
         logger.info(f"⚡ Chunking Concluido | {len(all_chunks)} pedacos processados.")
         return all_chunks
+
+    def _fallback_chunks(self, text: str, page_number: int, source_name: str) -> List[TextChunk]:
+        """Mantém a ingestão funcional quando o binário Go falha."""
+        chunks = []
+        step = max(1, self.max_chars - min(self.overlap_chars, self.max_chars - 1))
+        for start in range(0, len(text), step):
+            part = text[start:start + self.max_chars].strip()
+            if len(part) >= self.min_chars:
+                chunks.append(self._build_chunk(part, page_number, source_name))
+        return chunks
 
     @staticmethod
     def _build_chunk(text: str, page_number: int, source_name: str) -> TextChunk:

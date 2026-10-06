@@ -1,6 +1,10 @@
 import logging
 import json
 import asyncio
+import os
+import re
+import tempfile
+import threading
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -13,12 +17,19 @@ class MissionBlackboard:
     """
 
     def __init__(self, namespace: str = "global"):
+        if not isinstance(namespace, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
+            raise ValueError("Namespace inválido para o Blackboard.")
         self.namespace = namespace
         self.confirmed_facts: List[str] = []
         self.failed_attempts: List[str] = []
         self.current_strategy: str = "Exploração Inicial"
         self.technical_notes: Dict[str, Any] = {}
-        self.storage_path = Path(f"data/memory/blackboards/{namespace}.json")
+        root = Path("data/memory/blackboards").resolve()
+        self.storage_path = (root / f"{namespace}.json").resolve()
+        if not self.storage_path.is_relative_to(root):
+            raise ValueError("Arquivo do Blackboard fora do diretório permitido.")
+        self._save_lock = threading.Lock()
+        self._save_revision = 0
         self._load()
 
     def update_strategy(self, strategy: str):
@@ -39,27 +50,40 @@ class MissionBlackboard:
         self.technical_notes[key] = value
         self._save()
 
-    def _save_sync(self):
-        """Metodo bloqueante original de IO."""
+    def _snapshot(self):
+        return {
+            "confirmed_facts": list(self.confirmed_facts),
+            "failed_attempts": list(self.failed_attempts),
+            "current_strategy": self.current_strategy,
+            "technical_notes": dict(self.technical_notes),
+        }
+
+    def _save_sync(self, data=None, revision=None):
+        """Persiste um snapshot completo com replace atômico."""
+        temp_path = None
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "confirmed_facts": self.confirmed_facts,
-                "failed_attempts": self.failed_attempts,
-                "current_strategy": self.current_strategy,
-                "technical_notes": self.technical_notes
-            }
-            with open(self.storage_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+            data = data or self._snapshot()
+            with self._save_lock:
+                if revision is not None and revision != self._save_revision:
+                    return
+                with tempfile.NamedTemporaryFile("w", delete=False, dir=self.storage_path.parent, suffix=".tmp", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+                    temp_path = Path(f.name)
+                os.replace(temp_path, self.storage_path)
         except Exception as e:
             logger.error(f"Erro ao salvar Blackboard: {e}")
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
 
     def _save(self):
         """Persiste o estado no disco sem bloquear o Event Loop principal."""
         try:
             loop = asyncio.get_running_loop()
-            # Envia a gravação do disco para uma thread pool separada
-            loop.run_in_executor(None, self._save_sync)
+            with self._save_lock:
+                self._save_revision += 1
+                revision = self._save_revision
+            loop.run_in_executor(None, self._save_sync, self._snapshot(), revision)
         except RuntimeError:
             # Fallback se não houver event loop (ex: instanciado fora do fluxo async)
             self._save_sync()

@@ -46,4 +46,10 @@ export class AgentSocket {
             this.callbacks.onClose();
         };
     }
+
+    public abort() {
+        if (this.socket?.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({ action: 'abort' }));
+        }
+    }
 }

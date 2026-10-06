@@ -24,7 +24,7 @@ class LLMEngine:
         self.local_model = os.getenv("DEFAULT_MODEL", default_model)
         self.context_window = context_window
         self.base_url = base_url or os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_API_BASE") or "http://localhost:11434"
-        self.sovereign_mode = os.getenv("SOVEREIGN_MODE", "false").lower() == "true"
+        self.sovereign_mode = os.getenv("SOVEREIGN_MODE", "true").lower() == "true"
         
         # Configuração do Roteador Inteligente (LiteLLM Router)
         # Ordem validada empiricamente por velocidade e disponibilidade.
@@ -86,15 +86,14 @@ class LLMEngine:
                     }
                 })
 
-        # Ollama adicionado apenas se SOVEREIGN_MODE estiver ativo
-        if self.sovereign_mode:
-            model_list.append({
-                "model_name": "alana-core",
-                "litellm_params": {
-                    "model": self.local_model,
-                    "api_base": self.base_url
-                }
-            })
+        # Em modo híbrido, o modelo local é o último destino de fallback.
+        model_list.append({
+            "model_name": "alana-core",
+            "litellm_params": {
+                "model": self.local_model,
+                "api_base": self.base_url
+            }
+        })
         
         # latency-based: router aprende a preferir provedores mais rápidos automaticamente
         self.router = Router(model_list=model_list, num_retries=2, routing_strategy="latency-based-routing")

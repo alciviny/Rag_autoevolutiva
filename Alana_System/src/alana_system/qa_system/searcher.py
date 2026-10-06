@@ -1,6 +1,6 @@
 import logging
 import os
-import requests
+import httpx
 from typing import List, Dict, Any, Optional
 from .crawler import WebCrawler
 
@@ -23,18 +23,18 @@ class WebSearcher:
 
         try:
             logger.info(f"🔍 [Search] Buscando na web por: '{query}'")
-            response = requests.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": self.api_key,
-                    "query": query,
-                    "search_depth": "advanced",
-                    "max_results": max_results
-                },
-                timeout=15
-            )
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": self.api_key,
+                        "query": query,
+                        "search_depth": "advanced",
+                        "max_results": max_results
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
             
             results = []
             for item in data.get("results", []):

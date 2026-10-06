@@ -16,7 +16,7 @@ class KnowledgeCatalystTool(BaseTool):
         # Injetado pelo motor de agentes
         self.intelligence = intelligence
         
-    async def execute(self, **kwargs) -> str:
+    async def execute(self) -> str:
         if not self.intelligence:
             return "[ERRO]: Modulo de inteligencia de grafo nao inicializado."
             

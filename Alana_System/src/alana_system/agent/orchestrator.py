@@ -69,6 +69,7 @@ class MultiAgentOrchestrator:
 
             # 2. CICLO DE EXECUÇÃO RECURSIVO (Stark Mode)
             max_retries = 3
+            audit_passed = False
             for attempt in range(1, max_retries + 1):
                 await self._emit_thought("Orchestrator", f"Iniciando Ciclo de Engenharia {attempt}/{max_retries}...", callback)
                 
@@ -101,6 +102,7 @@ class MultiAgentOrchestrator:
                 state.audit_report = audit_data.get("reason", "Análise inconclusiva.")
                 
                 if audit_data.get("status") == "PASS":
+                    audit_passed = True
                     await self._emit_thought("Orchestrator", "✅ Solução aprovada pelo Auditor de Qualidade.", callback)
                     # 5. IMORTALIZAÇÃO: Salva a lição aprendida (Elite Mode)
                     if self.experience_store:
@@ -124,13 +126,18 @@ class MultiAgentOrchestrator:
                 "audit": state.audit_report,
                 "plan": state.plan,
                 "namespace": namespace,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "status": "completed" if audit_passed else "failed",
+                "audit_status": "PASS" if audit_passed else "FAIL",
             }
             with open(os.path.join(mission_dir, f"{mission_id}.json"), "w", encoding="utf-8") as f:
                 json.dump(report_data, f, ensure_ascii=False, indent=2)
 
             if callback:
-                await callback("mission_complete", {"message": "Missão Industrial Auditada e Finalizada."})
+                await callback(
+                    "mission_complete" if audit_passed else "mission_failed",
+                    {"message": "Missão aprovada na auditoria." if audit_passed else "Missão reprovada na auditoria após três tentativas.", "audit_status": report_data["audit_status"]},
+                )
 
             return report_data
         except Exception as e:

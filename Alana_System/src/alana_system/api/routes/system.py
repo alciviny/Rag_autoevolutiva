@@ -99,6 +99,8 @@ async def system_stream(request: Request, namespace: str = "global"):
                     all_jobs = graph_store.get_all_jobs()
                     jobs = [j for j in all_jobs if j.get("namespace") == namespace] if all_jobs else []
                     yield f"event: jobs\ndata: {json.dumps({'jobs': jobs})}\n\n"
+                    readings = graph_store.get_recent_telemetry(namespace, limit=50)
+                    yield f"event: telemetry\ndata: {json.dumps({'readings': readings})}\n\n"
                     
                 # 4. Logs
                 log_file = "alana.log"

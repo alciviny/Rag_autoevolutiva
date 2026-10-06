@@ -4,6 +4,7 @@ export type SystemStreamCallbacks = {
     onTasksUpdate: (tasks: BackgroundTask[]) => void;
     onArtifactsUpdate: (artifacts: any[]) => void;
     onJobsUpdate: (jobs: IngestionJob[]) => void;
+    onTelemetryUpdate: (readings: any[]) => void;
     onLogsUpdate: (logs: string) => void;
     onError: (error: any) => void;
 };
@@ -19,7 +20,7 @@ export class SystemStream {
     public connect(namespace: string) {
         if (this.eventSource) this.eventSource.close();
         
-        this.eventSource = new EventSource(`/api/system/stream?namespace=${namespace}`);
+        this.eventSource = new EventSource(`/api/system/stream?${new URLSearchParams({ namespace })}`);
         
         this.eventSource.addEventListener('tasks', (e: MessageEvent) => {
             try {
@@ -40,6 +41,13 @@ export class SystemStream {
                 const data = JSON.parse(e.data);
                 if (data.jobs) this.callbacks.onJobsUpdate(data.jobs);
             } catch (err) { console.error('Parse error jobs', err); }
+        });
+
+        this.eventSource.addEventListener('telemetry', (e: MessageEvent) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (Array.isArray(data.readings)) this.callbacks.onTelemetryUpdate(data.readings);
+            } catch (err) { console.error('Parse error telemetry', err); }
         });
 
         this.eventSource.addEventListener('logs', (e: MessageEvent) => {

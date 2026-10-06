@@ -32,10 +32,10 @@ class SpatialLocatorTool(BaseTool):
             query = """
                 SELECT name, last_location, last_seen 
                 FROM entities 
-                WHERE name LIKE ? OR description LIKE ?
+                WHERE namespace = ? AND (name LIKE ? OR description LIKE ?)
                 ORDER BY last_seen DESC LIMIT 1
             """
-            params = (f"%{object_name}%", f"%{object_name}%")
+            params = (self.current_namespace, f"%{object_name}%", f"%{object_name}%")
             
             with self.graph._connect() as conn:
                 cursor = conn.cursor()

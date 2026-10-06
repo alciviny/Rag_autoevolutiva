@@ -5,11 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alana System | Engineering Terminal</title>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
-        rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
 
 <body>
@@ -52,7 +48,7 @@
                     <h2>Terminal de Ingestão</h2>
                     <p>Submeta documentação técnica para expansão da base de conhecimento.</p>
 
-                    <div class="drop-zone" id="drop-zone">
+                    <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-label="Selecionar documento para ingestão">
                         <div class="icon">
                             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                 stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round">
@@ -62,7 +58,7 @@
                             </svg>
                         </div>
                         <span class="drop-text">Arraste arquivos ou <strong>selecione no diretório</strong></span>
-                        <input type="file" id="file-input" hidden accept=".pdf,.txt,.md,.mp3,.wav,.m4a">
+                        <input type="file" id="file-input" hidden accept=".pdf,.txt,.md,.docx,.mp3,.wav,.m4a">
                     </div>
 
                     <div style="margin-top: 15px; display: flex; align-items: center; justify-content: center; gap: 10px;">
@@ -118,8 +114,8 @@
             <!-- Telemetry Tab -->
             <div id="telemetry-tab" class="tab-content">
                 <div class="card">
-                    <h2>Telemetria em Tempo Real</h2>
-                    <p>Métricas de hardware e sensores IoT capturadas durante as missões.</p>
+                    <h2>Medições de Sensores</h2>
+                    <p>Leituras registradas pelo pipeline IoT da Alana.</p>
                     <div class="telemetry-grid" id="telemetry-display">
                         <div class="empty-jobs">Aguardando dados de telemetria...</div>
                     </div>
@@ -168,7 +164,7 @@
                                     placeholder="Ex: Analise a estabilidade térmica deste circuito e simule uma falha no capacitor de entrada..."></textarea>
                                 <div class="action-bar">
                                     <button id="run-mission-btn">INICIAR MISSÃO</button>
-                                    <button id="voice-btn" class="voice-btn" title="Falar Missão">
+                                    <button id="voice-btn" class="voice-btn" title="Falar Missão" aria-label="Gravar comando de voz" aria-pressed="false">
                                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
                                     </button>
                                 </div>
@@ -256,19 +252,6 @@
                     </div>
                 </div>
 
-                <div class="card">
-                    <h2>Configurações do Orquestrador</h2>
-                    <div class="config-grid">
-                        <div class="config-item">
-                            <label>Auto-Aprovação</label>
-                            <input type="checkbox" id="auto-approve-toggle">
-                        </div>
-                        <div class="config-item">
-                            <label>Modo de Pesquisa Profunda</label>
-                            <input type="checkbox" id="deep-search-toggle" checked>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <!-- Messages -->

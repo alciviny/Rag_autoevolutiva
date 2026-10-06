@@ -184,12 +184,10 @@ class VectorStore:
                 # -------------------------------
                 # Conversão determinística SHA -> UUID
                 # -------------------------------
-                uuid_id = str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_DNS,
-                        chunk.chunk_id
-                    )
-                )
+                uuid_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"{namespace}:{getattr(chunk, 'record_type', 'document')}:{chunk.source_name}:{chunk.chunk_id}"
+                ))
 
                 payload = {
                     "original_id": chunk.chunk_id,
@@ -197,12 +195,13 @@ class VectorStore:
                     "text": chunk.text,
                     "file_name": chunk.source_name,
                     "namespace": namespace,
+                    "record_type": getattr(chunk, "record_type", "document"),
                 }
 
                 points.append(
                     PointStruct(
                         id=uuid_id,
-                        vector=chunk.embedding.tolist(),
+                        vector=np.asarray(chunk.embedding, dtype=float).tolist(),
                         payload=payload,
                     )
                 )
@@ -244,7 +243,10 @@ class VectorStore:
                     logger.warning(f"Dimensão inválida para entidade {ent['name']}")
                     continue
 
-                uuid_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, ent["name"]))
+                uuid_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"{namespace}:entity:{ent['name']}"
+                ))
 
                 payload = {
                     "original_id": ent["name"],
@@ -255,7 +257,7 @@ class VectorStore:
                 points.append(
                     PointStruct(
                         id=uuid_id,
-                        vector=ent["embedding"], # type: ignore
+                    vector=np.asarray(ent["embedding"], dtype=float).tolist(),
                         payload=payload,
                     )
                 )
@@ -292,9 +294,11 @@ class VectorStore:
             )
             # Mescla com filtros existentes se houver
             if filters:
-                if not filters.must:
-                    filters.must = []
-                filters.must.extend(namespace_filter.must)
+                filters = Filter(
+                    must=[*(filters.must or []), *namespace_filter.must],
+                    should=filters.should,
+                    must_not=filters.must_not,
+                )
             else:
                 filters = namespace_filter
         # Validação de dimensão defensiva (Ponto 7 Auditoria)
@@ -338,6 +342,7 @@ class VectorStore:
                     "text": payload.get("text"),
                     "file_name": payload.get("file_name"),
                     "entity_name": payload.get("entity_name"),
+                    "record_type": payload.get("record_type"),
                 }
             )
 

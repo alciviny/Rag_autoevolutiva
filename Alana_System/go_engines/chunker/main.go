@@ -1,9 +1,9 @@
 package main
 
 import (
+	"alana_system/go_engines/shared"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 )
@@ -21,9 +21,34 @@ type ChunkResult struct {
 	Content string `json:"content"`
 }
 
+func chunkText(text string, maxChars, overlap int) []ChunkResult {
+	textRunes := []rune(text)
+	if maxChars < 1 {
+		maxChars = 1200
+	}
+	if overlap < 0 {
+		overlap = 0
+	} else if overlap >= maxChars {
+		overlap = maxChars - 1
+	}
+	step := maxChars - overlap
+	chunks := make([]ChunkResult, 0)
+	for start, index := 0, 0; start < len(textRunes); start, index = start+step, index+1 {
+		end := start + maxChars
+		if end > len(textRunes) {
+			end = len(textRunes)
+		}
+		content := strings.TrimSpace(string(textRunes[start:end]))
+		if content != "" {
+			chunks = append(chunks, ChunkResult{Index: index, Content: content})
+		}
+	}
+	return chunks
+}
+
 func main() {
 	// Lê a entrada do Python
-	rawInput, err := io.ReadAll(os.Stdin)
+	rawInput, err := shared.ReadInput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Erro na leitura: %v\n", err)
 		os.Exit(1)
@@ -35,39 +60,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Algoritmo de Chunking Paralelo
-	// Dividimos o texto em "Sentenças" (ponto final) para não quebrar no meio de frases
-	sentences := strings.Split(input.Text, ". ")
-	
-	var chunks []ChunkResult
-	currentChunk := ""
-	chunkIdx := 0
-	
-	// Nota: Para ser 100% paralelo em documentos gigantes, poderíamos dividir o texto 
-	// em blocos maiores e processar cada um. Aqui faremos uma divisão linear ultra-rápida.
-	for _, sentence := range sentences {
-		if len(currentChunk)+len(sentence) > input.MaxTokens {
-			chunks = append(chunks, ChunkResult{
-				Index:   chunkIdx,
-				Content: strings.TrimSpace(currentChunk),
-			})
-			
-			// Mantém o overlap para contexto
-			overlapStart := len(currentChunk) - input.OverlapChars
-			if overlapStart < 0 { overlapStart = 0 }
-			currentChunk = currentChunk[overlapStart:] + " " + sentence + ". "
-			chunkIdx++
-		} else {
-			currentChunk += sentence + ". "
-		}
-	}
-
-	if currentChunk != "" {
-		chunks = append(chunks, ChunkResult{
-			Index:   chunkIdx,
-			Content: strings.TrimSpace(currentChunk),
-		})
-	}
+	chunks := chunkText(input.Text, input.MaxTokens, input.OverlapChars)
 
 	// Devolve o resultado em JSON
 	output, _ := json.Marshal(chunks)

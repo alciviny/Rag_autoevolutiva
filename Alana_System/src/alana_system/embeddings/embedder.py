@@ -42,6 +42,7 @@ class EmbeddedChunk:
     text: str
     source_name: str
     embedding: np.ndarray
+    record_type: str = "document"
 
 
 # ============================================================

@@ -73,11 +73,13 @@ async def add_trace_id_middleware(request, call_next):
     return response
 
 # Habilita CORS com segurança industrial
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+allowed_origins = [origin.strip() for origin in os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
+).split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials="*" not in allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -102,4 +104,4 @@ app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend
 if __name__ == "__main__":
     import uvicorn
     logger.info("📡 Servidor Alana iniciando na porta 8000...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "8000")))

@@ -3,13 +3,21 @@ import logging
 import re
 import uuid
 from typing import List, Dict, Optional, Tuple, Set
-from datetime import datetime, timedelta
-from functools import lru_cache
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alana_system.preprocessing.entity_extractor import KnowledgeGraphSchema
 
 logger = logging.getLogger("alana.memory.graph")
+
+
+class _ClosingConnection(sqlite3.Connection):
+    """Fecha conexões ao sair de `with`, liberando WAL e arquivos no Windows."""
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            return super().__exit__(exc_type, exc, traceback)
+        finally:
+            self.close()
 
 class GraphStore:
     """
@@ -26,9 +34,10 @@ class GraphStore:
         import time
         for attempt in range(5):
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                conn = sqlite3.connect(self.db_path, timeout=30.0, factory=_ClosingConnection)
                 conn.row_factory = sqlite3.Row
                 # Configuracoes industriais para alta concorrencia
+                conn.execute("PRAGMA foreign_keys=ON;")
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
                 conn.execute("PRAGMA cache_size=-64000;") # 64MB cache
@@ -83,6 +92,20 @@ class GraphStore:
             if missing_cols:
                 logger.info(f"🔧 Migração entities concluída: Adicionadas colunas {missing_cols}")
                 conn.commit()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS entity_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_name TEXT NOT NULL,
+                    source_doc TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    evidence TEXT NOT NULL,
+                    namespace TEXT NOT NULL DEFAULT 'global',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(entity_name, source_doc, page_number, evidence, namespace),
+                    FOREIGN KEY(entity_name, namespace) REFERENCES entities(name, namespace)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_evidence_source ON entity_evidence(namespace, source_doc, page_number)")
             # Tabela de Relacoes (Core do Grafo)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS relations (
@@ -92,6 +115,7 @@ class GraphStore:
                     object TEXT NOT NULL,
                     source_doc TEXT,
                     page_number INTEGER,
+                    evidence TEXT NOT NULL DEFAULT '',
                     namespace TEXT DEFAULT 'global',
                     version INTEGER DEFAULT 1,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -106,14 +130,33 @@ class GraphStore:
                 logger.info("🔧 Migrando banco de dados: Adicionando coluna 'version' em relations...")
                 cursor.execute("ALTER TABLE relations ADD COLUMN version INTEGER DEFAULT 1")
                 conn.commit()
+            if "evidence" not in rel_cols:
+                cursor.execute("ALTER TABLE relations ADD COLUMN evidence TEXT NOT NULL DEFAULT ''")
             # Tabela de Sinônimos/Aliases
+            cursor.execute("PRAGMA table_info(entity_aliases)")
+            alias_columns = {row[1] for row in cursor.fetchall()}
+            if alias_columns and "namespace" not in alias_columns:
+                # Legacy aliases had no tenant owner; preserve them in global only.
+                cursor.execute("ALTER TABLE entity_aliases RENAME TO entity_aliases_legacy")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS entity_aliases (
-                    alias TEXT PRIMARY KEY,
+                    alias TEXT NOT NULL,
                     canonical_name TEXT NOT NULL,
-                    FOREIGN KEY(canonical_name) REFERENCES entities(name)
+                    namespace TEXT NOT NULL DEFAULT 'global',
+                    PRIMARY KEY(alias, namespace),
+                    FOREIGN KEY(canonical_name, namespace) REFERENCES entities(name, namespace)
                 )
             """)
+            if alias_columns and "namespace" not in alias_columns:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO entity_aliases (alias, canonical_name, namespace)
+                    SELECT alias, canonical_name, 'global' FROM entity_aliases_legacy
+                    WHERE EXISTS (
+                        SELECT 1 FROM entities e
+                        WHERE e.name = entity_aliases_legacy.canonical_name AND e.namespace = 'global'
+                    )
+                """)
+                cursor.execute("DROP TABLE entity_aliases_legacy")
             # Tabela de Controle de Ingestao (Checkpoints)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ingestion_jobs (
@@ -183,6 +226,17 @@ class GraphStore:
         except Exception as e:
             logger.error(f"Erro ao salvar telemetria: {e}")
 
+    def get_recent_telemetry(self, namespace: str = "global", limit: int = 50) -> List[Dict]:
+        """Retorna leituras reais de sensores, mais recentes primeiro."""
+        limit = max(1, min(int(limit), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT entity_name, value, unit, raw_reading, timestamp FROM telemetry "
+                "WHERE namespace = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (namespace, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def get_entity(self, name: str, namespace: str = "global") -> Optional[Dict]:
         """Recupera metadados de uma entidade de forma segura (Abstracao de Infra - P2 Auditoria)."""
         try:
@@ -217,29 +271,29 @@ class GraphStore:
             else: normalized_words.append(word.capitalize())
         return " ".join(normalized_words)
 
-    @lru_cache(maxsize=1024)
-    def _resolve_canonical_name_cached(self, name: str) -> str:
-        """Versao com cache para evitar IO excessivo em loop (Ponto 4 Auditoria)."""
+    def _resolve_canonical_name_cached(self, name: str, namespace: str = "global") -> str:
+        """Resolve nomes sem compartilhar aliases/cache entre tenants."""
         normalized = self.normalize_name(name)
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ?", (normalized,))
+                cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ? AND namespace = ?", (normalized, namespace))
                 row = cursor.fetchone()
                 if row: return row["canonical_name"]
-                cursor.execute("SELECT name FROM entities WHERE name = ?", (normalized,))
+                cursor.execute("SELECT name FROM entities WHERE name = ? AND namespace = ?", (normalized, namespace))
                 row = cursor.fetchone()
                 return row["name"] if row else normalized
         except Exception:
             return normalized
 
-    def _resolve_canonical_name(self, cursor, name: str) -> str:
+    def _resolve_canonical_name(self, cursor, name: str, namespace: str = "global") -> str:
         """Resolve alias usando cursor existente (dentro de transacao)."""
         normalized = self.normalize_name(name)
-        cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ?", (normalized,))
+        cursor.execute("SELECT canonical_name FROM entity_aliases WHERE alias = ? AND namespace = ?", (normalized, namespace))
         row = cursor.fetchone()
-        if row: return row["canonical_name"]
-        cursor.execute("SELECT name FROM entities WHERE name = ?", (normalized,))
+        if row:
+            return row["canonical_name"]
+        cursor.execute("SELECT name FROM entities WHERE name = ? AND namespace = ?", (normalized, namespace))
         row = cursor.fetchone()
         return row["name"] if row else normalized
 
@@ -247,11 +301,11 @@ class GraphStore:
         """Persiste um grafo completo extraído por IA com metadados espaciais."""
         if not graph: return
         metadata = metadata or {}
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
                 for entity in (graph.entities or []):
-                    canonical = self._resolve_canonical_name(cursor, entity.name)
+                    canonical = self._resolve_canonical_name(cursor, entity.name, namespace)
                     # Fusao Inteligente: Se ja existe, tenta mesclar metadados (Ponto Critico Auditoria)
                     cursor.execute("SELECT description, type FROM entities WHERE name = ? AND namespace = ?", (canonical, namespace))
                     existing = cursor.fetchone()
@@ -275,21 +329,37 @@ class GraphStore:
                             INSERT INTO entities (name, type, description, namespace, last_location) 
                             VALUES (?, ?, ?, ?, ?)
                         """, (canonical, entity.type, entity.description, namespace, metadata.get("location", "unknown")))
+                    evidence = getattr(entity, "evidence", "").strip()[:1000]
+                    if evidence and source_doc:
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO entity_evidence
+                                (entity_name, source_doc, page_number, evidence, namespace)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (canonical, source_doc, page_number, evidence, namespace))
                 
                 for rel in (graph.relations or []):
-                    subj = self._resolve_canonical_name(cursor, rel.subject)
-                    obj = self._resolve_canonical_name(cursor, rel.object)
+                    subj = self._resolve_canonical_name(cursor, rel.subject, namespace)
+                    obj = self._resolve_canonical_name(cursor, rel.object, namespace)
                     # Garante existencia com namespace
                     cursor.execute("INSERT OR IGNORE INTO entities (name, type, namespace) VALUES (?, ?, ?)", (subj, "Conceito", namespace))
                     cursor.execute("INSERT OR IGNORE INTO entities (name, type, namespace) VALUES (?, ?, ?)", (obj, "Conceito", namespace))
                     
                     cursor.execute("""
-                        INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number, namespace, version)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (subj, rel.predicate, obj, source_doc, page_number, namespace, 1))
+                        INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number, evidence, namespace, version)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (subj, rel.predicate, obj, source_doc, page_number, getattr(rel, "evidence", "").strip()[:1000], namespace, 1))
+                    evidence = getattr(rel, "evidence", "").strip()[:1000]
+                    if evidence:
+                        cursor.execute("""
+                            UPDATE relations SET evidence = ?
+                            WHERE subject = ? AND relation = ? AND object = ?
+                              AND source_doc = ? AND page_number = ? AND namespace = ?
+                              AND (evidence IS NULL OR evidence = '')
+                        """, (evidence, subj, rel.predicate, obj, source_doc, page_number, namespace))
                 conn.commit()
-        except Exception as e:
-            logger.error(f"Erro ao persistir conhecimento: {e}")
+            except Exception:
+                conn.rollback()
+                raise
 
     def add_fact(self, subject: str, relation: str, object_name: str, source: str = "AGENT_DISCOVERY", namespace: str = "global") -> bool:
         """Adiciona um fato unico (Agent Discoveries)."""
@@ -298,8 +368,10 @@ class GraphStore:
             o_norm = self.normalize_name(object_name)
             with self._connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (s_norm, "Entity"))
-                cursor.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?, ?)", (o_norm, "Entity"))
+                s_norm = self._resolve_canonical_name(cursor, s_norm, namespace)
+                o_norm = self._resolve_canonical_name(cursor, o_norm, namespace)
+                cursor.execute("INSERT OR IGNORE INTO entities (name, type, namespace) VALUES (?, ?, ?)", (s_norm, "Entity", namespace))
+                cursor.execute("INSERT OR IGNORE INTO entities (name, type, namespace) VALUES (?, ?, ?)", (o_norm, "Entity", namespace))
                 cursor.execute("""
                     INSERT OR IGNORE INTO relations (subject, relation, object, source_doc, page_number, namespace)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -312,17 +384,31 @@ class GraphStore:
 
     def query_subgraph(self, entity_names: List[str], limit: int = 50, namespace: str = "global") -> List[Dict]:
         """Consulta vizinhanca de 2-HOPS filtrada por namespace."""
-        if not entity_names: return []
+        if not entity_names or limit <= 0: return []
+        entity_names = [self.normalize_name(name) for name in entity_names]
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                placeholders = ", ".join(["?"] * len(entity_names))
+                placeholders = ", ".join("(?)" for _ in entity_names)
                 query = f"""
-                    SELECT DISTINCT subject, relation, object, source_doc, page_number
-                    FROM relations WHERE (subject IN ({placeholders}) OR object IN ({placeholders})) AND namespace = ?
-                    LIMIT ?
+                    WITH RECURSIVE seeds(name) AS (VALUES {placeholders}),
+                    reachable(name, depth) AS (
+                        SELECT name, 0 FROM seeds
+                        UNION
+                        SELECT CASE WHEN r.subject = reachable.name THEN r.object ELSE r.subject END,
+                               reachable.depth + 1
+                        FROM relations r JOIN reachable
+                          ON r.subject = reachable.name OR r.object = reachable.name
+                        WHERE r.namespace = ? AND reachable.depth < 2
+                    )
+                    SELECT DISTINCT r.subject, r.relation, r.object, r.source_doc, r.page_number, r.evidence
+                    FROM relations r
+                    WHERE r.namespace = ?
+                      AND r.subject IN (SELECT name FROM reachable)
+                      AND r.object IN (SELECT name FROM reachable)
+                    ORDER BY r.timestamp DESC LIMIT ?
                 """
-                cursor.execute(query, (*entity_names, *entity_names, namespace, limit))
+                cursor.execute(query, (*entity_names, namespace, namespace, limit))
                 return [dict(row) for row in cursor.fetchall()]
         except Exception:
             return []
@@ -375,7 +461,11 @@ class GraphStore:
             conn.execute("""
                 INSERT INTO ingestion_jobs (file_hash, filename, total_batches, namespace, status, completed_batches, updated_at)
                 VALUES (?, ?, ?, ?, 'PENDING', 0, CURRENT_TIMESTAMP)
-                ON CONFLICT(file_hash, namespace) DO UPDATE SET status = 'PENDING', updated_at = CURRENT_TIMESTAMP
+                ON CONFLICT(file_hash, namespace) DO UPDATE SET
+                    filename = excluded.filename,
+                    total_batches = excluded.total_batches,
+                    status = 'PENDING',
+                    updated_at = CURRENT_TIMESTAMP
             """, (file_hash, filename, total_batches, namespace))
             conn.commit()
 
@@ -412,9 +502,21 @@ class GraphStore:
 
     # (Os métodos save_entity_embedding e get_all_entity_embeddings foram descontinuados e migrados para o Qdrant)
 
-    def add_alias(self, alias: str, canonical: str):
+    def add_alias(self, alias: str, canonical: str, namespace: str = "global") -> None:
+        alias, canonical = self.normalize_name(alias), self.normalize_name(canonical)
+        if not alias or not canonical:
+            raise ValueError("Alias e nome canônico não podem ser vazios.")
         with self._connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO entity_aliases (alias, canonical_name) VALUES (?, ?)", (alias, canonical))
+            canonical_exists = conn.execute(
+                "SELECT 1 FROM entities WHERE name = ? AND namespace = ?", (canonical, namespace)
+            ).fetchone()
+            if not canonical_exists:
+                raise ValueError(f"Entidade canônica '{canonical}' não existe no namespace '{namespace}'.")
+            conn.execute(
+                "INSERT INTO entity_aliases (alias, canonical_name, namespace) VALUES (?, ?, ?) "
+                "ON CONFLICT(alias, namespace) DO UPDATE SET canonical_name = excluded.canonical_name",
+                (alias, canonical, namespace),
+            )
             conn.commit()
 
     def get_all_edges(self, namespace: str = "global", limit: Optional[int] = None) -> List[tuple]:
@@ -483,13 +585,14 @@ class GraphStore:
             logger.error(f"Erro ao contar entidades: {e}")
             return 0
 
-    def entity_degree(self, name: str) -> Dict[str, int]:
+    def entity_degree(self, name: str, namespace: str = "global") -> Dict[str, int]:
         """Retorna o grau de entrada (in) e saida (out) de uma entidade no grafo."""
         try:
             normalized = self.normalize_name(name)
             with self._connect() as conn:
-                in_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE object = ?", (normalized,)).fetchone()[0]
-                out_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE subject = ?", (normalized,)).fetchone()[0]
+                normalized = self._resolve_canonical_name(conn.cursor(), normalized, namespace)
+                in_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE object = ? AND namespace = ?", (normalized, namespace)).fetchone()[0]
+                out_degree = conn.execute("SELECT COUNT(*) FROM relations WHERE subject = ? AND namespace = ?", (normalized, namespace)).fetchone()[0]
                 return {"in": in_degree, "out": out_degree}
         except Exception as e:
             logger.error(f"Erro ao obter grau da entidade {name}: {e}")
@@ -545,18 +648,18 @@ class GraphStore:
             logger.error(f"Erro ao inferir relacoes transitivas: {e}")
             return 0
 
-    def trending_entities(self, days: int = 7) -> List[Dict]:
+    def trending_entities(self, days: int = 7, namespace: str = "global") -> List[Dict]:
         """Retorna as entidades vistas recentemente nos ultimos N dias ordenadas por frequencia."""
         try:
             from datetime import datetime, timedelta
-            limit_date = (datetime.now() - timedelta(days=days)).isoformat()
+            limit_date = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(0, days))).isoformat()
             with self._connect() as conn:
                 rows = conn.execute("""
                     SELECT name as entity, last_seen, last_location 
-                    FROM entities 
+                    FROM entities WHERE namespace = ? AND last_seen >= ?
                     ORDER BY last_seen DESC 
                     LIMIT 20
-                """).fetchall()
+                """, (namespace, limit_date)).fetchall()
                 return [dict(r) for r in rows]
         except Exception as e:
             logger.error(f"Erro ao obter entidades em tendencia: {e}")

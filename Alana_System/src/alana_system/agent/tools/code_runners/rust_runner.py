@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 from ..base_tool import BaseTool
+from ..path_utils import safe_workspace_file, unsandboxed_code_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,14 @@ class RustRunnerTool(BaseTool):
         self.workspace = Path(workspace_path)
         
     async def execute(self, filename: str) -> str:
-        workspace = self.workspace / self.current_namespace
-        workspace.mkdir(parents=True, exist_ok=True)
-        
-        file_path = workspace / filename
+        if not unsandboxed_code_execution_enabled():
+            return "[BLOQUEADO] Execução direta de código está desativada até configurar um worker isolado."
+        try:
+            workspace, file_path = safe_workspace_file(self.workspace, self.current_namespace, filename)
+        except (ValueError, PermissionError) as exc:
+            return f"[BLOQUEIO DE CAMINHO] {exc}"
+        if file_path.suffix != ".rs":
+            return "[ERRO] Esperado um arquivo Rust (.rs)."
         if not file_path.exists():
             return f"[ERRO] O arquivo {filename} não existe no sandbox do projeto {self.current_namespace}."
             

@@ -19,7 +19,7 @@ services:
       dockerfile: Dockerfile
     container_name: alana_bridge_api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - HOST=0.0.0.0
       - GEMINI_API_KEY=${GEMINI_API_KEY}
@@ -29,7 +29,6 @@ services:
     volumes:
       - ./alana_memoria_local:/app/alana_memoria_local
       - ./data:/app/data
-      - .:/app
     depends_on:
       - qdrant
     healthcheck:

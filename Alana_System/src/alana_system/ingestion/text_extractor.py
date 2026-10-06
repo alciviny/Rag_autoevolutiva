@@ -57,7 +57,7 @@ class TextExtractor:
 
     def _extract_text_file(self, path: Path) -> List[PageText]:
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
                 content = f.read()
             return [PageText(page_number=1, text=content, char_count=len(content))]
         except Exception as e:
@@ -68,6 +68,9 @@ class TextExtractor:
         try:
             doc = docx.Document(path)
             full_text = [para.text for para in doc.paragraphs]
+            for table in doc.tables:
+                for row in table.rows:
+                    full_text.append("\t".join(cell.text for cell in row.cells))
             content = "\n".join(full_text)
             return [PageText(page_number=1, text=content, char_count=len(content))]
         except Exception as e:

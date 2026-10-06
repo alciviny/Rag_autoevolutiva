@@ -1,6 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+import re
 
 logger = logging.getLogger("alana.agent.tool")
 
@@ -15,6 +16,8 @@ class BaseTool(ABC):
 
     def set_context(self, namespace: str):
         """Define o namespace atual para a execucao da ferramenta."""
+        if not isinstance(namespace, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
+            raise ValueError("Namespace inválido.")
         self.current_namespace = namespace
     
     @property

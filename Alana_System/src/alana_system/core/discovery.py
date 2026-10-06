@@ -53,8 +53,11 @@ class DiscoveryManager:
                     entities=[EntitySchema(name=entity_name, type="Pesquisa Autonoma", description=result)],
                     relations=[]
                 )
+                intelligence = getattr(getattr(self.orchestrator, "query_engine", None), "intelligence", None)
+                if intelligence:
+                    await intelligence.reconcile_graph(new_graph, namespace)
                 self.graph.add_knowledge(new_graph, source_doc="autonomous_discovery", page_number=0, namespace=namespace)
-                await self.sensory.broadcast_alert(f"Concluí minha pesquisa sobre '{entity_name}'.")
+                await self.sensory.broadcast_alert(f"Concluí minha pesquisa sobre '{entity_name}'.", namespace)
                 self.already_researched.add(entity_name)
             except Exception as e:
                 logger.error(f"Erro na pesquisa de {entity_name}: {e}")

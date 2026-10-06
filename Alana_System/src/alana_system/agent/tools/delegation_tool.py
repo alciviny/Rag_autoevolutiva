@@ -17,16 +17,18 @@ class DelegateTaskTool(BaseTool):
             
             from ..core.engine import AgentEngine
             
-            memory_tool = self.parent_engine.registry.get_tool("query_memory")
+            memory_tool = self.parent_engine.registry.get_tool("consult_memory")
             query_engine = memory_tool.query_engine if memory_tool else None
             
             # Instancia um Sub-agente (Worker) limpo
             worker = AgentEngine(
                 llm=self.parent_engine.llm,
                 query_engine=query_engine,
+                deep_search_agent=self.parent_engine.deep_search_agent,
                 is_primary=False  # Protege contra recursão infinita
             )
             worker.max_loops = 10
+            worker.dynamic_manager.base_path = self.parent_engine.dynamic_manager.base_path
             
             # Dispara a sub_mission no mesmo namespace, para compartilhar o sandbox
             result = await worker.run_mission(

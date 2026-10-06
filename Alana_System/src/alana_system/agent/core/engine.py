@@ -39,10 +39,15 @@ class AgentEngine:
         from ...iot.vision import VisionProcessor
 
         self.llm = llm or LLMEngine()
+        self.query_engine = query_engine
+        self.deep_search_agent = deep_search_agent
         self.is_primary = is_primary
         self.max_loops = 30 # Protecao contra loops infinitos
         self.event_callbacks: List[Callable] = []
         self.registry = ToolRegistry()
+        self._mission_lock = asyncio.Lock()
+        self._dynamic_tool_names = set()
+        self._core_tool_names = set()
         self.dynamic_manager = dynamic_manager or DynamicToolManager()
         self.blackboard = MissionBlackboard("global")
         
@@ -73,13 +78,19 @@ class AgentEngine:
         if graph_intelligence:
             self.registry.register(NavigateGraphTool(graph_intelligence))
             if hasattr(graph_intelligence, 'graph_store'):
-                self.registry.register(StoreFactTool(graph_intelligence.graph_store))
+                self.registry.register(StoreFactTool(graph_intelligence.graph_store, graph_intelligence))
             self.registry.register(AutonomousAnalystTool(graph_intelligence))
             
         # Olho de JARVIS
         self.registry.register(VisionAnalysisTool(VisionProcessor()))
+        self._core_tool_names = set(self.registry.list_tools())
 
     async def run_mission(self, mission: str, namespace: str = "global", event_callback=None, approval_callback=None):
+        # Tools and blackboard are shared mutable state; serialize missions per engine.
+        async with self._mission_lock:
+            return await self._run_mission(mission, namespace, event_callback, approval_callback)
+
+    async def _run_mission(self, mission: str, namespace: str = "global", event_callback=None, approval_callback=None):
         """
         Executa uma missao autonoma com isolamento de projeto (Namespace).
         """
@@ -104,9 +115,16 @@ class AgentEngine:
             logger.warning(alert)
 
         # 4. Carrega ferramentas dinâmicas do namespace (Tool Maker)
+        for tool_name in self._dynamic_tool_names:
+            self.registry.tools.pop(tool_name, None)
+        self._dynamic_tool_names.clear()
         dynamic_tools = self.dynamic_manager.load_tools_for_namespace(namespace)
         for d_tool in dynamic_tools:
+            if d_tool.name in self._core_tool_names:
+                logger.warning("Ferramenta dinâmica ignorada por conflito com ferramenta nativa: %s", d_tool.name)
+                continue
             self.registry.register(d_tool)
+            self._dynamic_tool_names.add(d_tool.name)
             
         # Injeta o namespace no sistema de ferramentas
         for tool_name in self.registry.list_tools():
@@ -119,9 +137,8 @@ class AgentEngine:
             {"role": "user", "content": f"OBJETIVO: {mission}"}
         ]
         
-        tools_schema = self.registry.get_openai_tools_schema()
-
         for attempt in range(1, self.max_loops + 1):
+            tools_schema = self.registry.get_openai_tools_schema()
             messages = await self._manage_context(messages)
             await emit("cycle_start", {"attempt": attempt, "total": self.max_loops})
             

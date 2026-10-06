@@ -64,15 +64,18 @@ async def test_knowledge_storer(mock_graph_store, mock_extractor):
 
 @pytest.mark.asyncio
 async def test_web_searcher():
-    with patch("requests.post") as mock_post:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "results": [
-                {"url": "http://test.com", "title": "Test Title", "content": "Test Content", "score": 0.9}
-            ]
-        }
-        mock_post.return_value = mock_response
-        
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "results": [
+            {"url": "http://test.com", "title": "Test Title", "content": "Test Content", "score": 0.9}
+        ]
+    }
+    client = MagicMock()
+    client.post = AsyncMock(return_value=mock_response)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=None)
+    with patch("alana_system.qa_system.searcher.httpx.AsyncClient", return_value=context):
         searcher = WebSearcher(api_key="fake-key")
         results = await searcher.search("query")
         assert len(results) == 1
@@ -81,7 +84,7 @@ async def test_web_searcher():
 @pytest.mark.asyncio
 async def test_web_crawler():
     crawler = WebCrawler()
-    with patch.object(crawler, "_scrape_page") as mock_scrape:
+    with patch.object(crawler, "_is_public_url", return_value=True), patch.object(crawler, "_scrape_page") as mock_scrape:
         mock_scrape.return_value = {
             "text": "Extracted Text Content",
             "links": []

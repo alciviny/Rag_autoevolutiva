@@ -1,4 +1,12 @@
 # ESTÁGIO 1: Compilação dos Motores Go (Músculos Industriais)
+FROM node:20-alpine AS frontend-builder
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ESTÁGIO 2: Compilação dos Motores Go
 FROM golang:1.21-alpine AS go-builder
 WORKDIR /build
 
@@ -10,7 +18,7 @@ RUN go build -o semantic_chunker ./go_engines/chunker/main.go
 RUN go build -o fast_processor ./go_engines/cleaner/main.go
 RUN go build -o graph_turbo ./go_engines/graph/main.go
 
-# ESTÁGIO 2: Ambiente de Execução Python (Cérebro Cognitivo)
+# ESTÁGIO 3: Ambiente de Execução Python (Cérebro Cognitivo)
 FROM python:3.10-slim
 
 # Evita a criação de arquivos .pyc e permite logs em tempo real
@@ -58,6 +66,7 @@ RUN python -m spacy download en_core_web_sm && \
 
 # Copia o código fonte Python
 COPY . .
+COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
 EXPOSE 8000
 

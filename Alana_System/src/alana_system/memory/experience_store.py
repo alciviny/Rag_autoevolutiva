@@ -8,8 +8,17 @@ from typing import List, Optional, Dict, Any
 
 from ..embeddings.embedder import EmbeddedChunk
 import numpy as np
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 logger = logging.getLogger("alana.memory.experience")
+
+
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            return super().__exit__(exc_type, exc, traceback)
+        finally:
+            self.close()
 
 class ExperienceStore:
     """
@@ -32,7 +41,7 @@ class ExperienceStore:
         import time
         for attempt in range(5):
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                conn = sqlite3.connect(self.db_path, timeout=30.0, factory=_ClosingConnection)
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
@@ -98,7 +107,8 @@ class ExperienceStore:
                     page_number=0,
                     text=text_to_embed[:500], # Resumo para o payload
                     source_name=f"experience:{mission_name}",
-                    embedding=vector
+                    embedding=vector,
+                    record_type="experience",
                 )
                 
                 self.vector_store.upsert_embeddings([chunk], namespace=namespace)
@@ -118,13 +128,18 @@ class ExperienceStore:
         try:
             # 1. Busca no Qdrant
             query_vector = self.embedder.embed_texts([query])[0]
-            matches = self.vector_store.search(query_vector, top_k=limit, namespace=namespace)
+            matches = self.vector_store.search(
+                query_vector,
+                top_k=limit,
+                namespace=namespace,
+                filters=Filter(must=[FieldCondition(key="record_type", match=MatchValue(value="experience"))]),
+            )
             
             # IDs de experiências similares (no VectorStore o original_id guarda o exp_id)
             exp_ids = [m["chunk_id"] for m in matches if m["chunk_id"]]
             
             if not exp_ids:
-                return []
+                return self._keyword_search(query, namespace, limit)
 
             # 2. Recupera detalhes do SQLite
             with self._connect() as conn:
@@ -150,3 +165,11 @@ class ExperienceStore:
             clauses = " OR ".join(["task_description LIKE ?" for _ in words])
             cursor.execute(f"SELECT * FROM experiences WHERE ({clauses}) AND namespace = ? ORDER BY timestamp DESC LIMIT ?", (*words, namespace, limit))
             return [dict(row) for row in cursor.fetchall()]
+
+    def list_recent(self, namespace: str = "global", limit: int = 20) -> List[Dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM experiences WHERE namespace = ? ORDER BY timestamp DESC LIMIT ?",
+                (namespace, max(1, min(limit, 100))),
+            ).fetchall()
+            return [dict(row) for row in rows]

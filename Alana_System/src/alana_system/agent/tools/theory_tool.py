@@ -25,6 +25,8 @@ class TheoryValidationTool(BaseTool):
         """
         experiment_id = str(uuid.uuid4())[:8]
         filename = f"experiment_{experiment_id}.py"
+        self.writer.set_context(self.current_namespace)
+        self.runner.set_context(self.current_namespace)
         
         logger.info(f"🔬 Alana iniciando validação de teoria (Exp: {experiment_id}): {theory[:50]}...")
         

@@ -25,7 +25,15 @@ export const setupDragAndDrop = (
         }
     });
 
-    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('click', (event) => {
+        if (event.target !== fileInput) fileInput.click();
+    });
+    dropZone.addEventListener('keydown', (event: KeyboardEvent) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            fileInput.click();
+        }
+    });
     
     fileInput.addEventListener('change', () => {
         if (fileInput.files && fileInput.files.length > 0) {

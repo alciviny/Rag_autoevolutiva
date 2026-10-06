@@ -32,10 +32,10 @@ class TelemetryQueryTool(BaseTool):
             query = """
                 SELECT value, unit, raw_reading, timestamp 
                 FROM telemetry 
-                WHERE entity_name LIKE ? 
+                WHERE entity_name LIKE ? AND namespace = ?
                 ORDER BY timestamp DESC LIMIT ?
             """
-            params = (f"%{entity_name}%", limit)
+            params = (f"%{entity_name}%", self.current_namespace, limit)
             
             with self.graph._connect() as conn:
                 cursor = conn.cursor()

@@ -40,7 +40,10 @@ class StrategicSourcingTool(BaseTool):
                     entities=[EntitySchema(name=item_name, type="Wishlist", description="Item aguardando compra.")],
                     relations=[]
                 )
-                self.graph.add_knowledge(new_graph, source_doc="manual_sourcing", page_number=0)
+                intelligence = getattr(self.orchestrator.query_engine, "intelligence", None)
+                if intelligence and hasattr(intelligence, "reconcile_graph"):
+                    await intelligence.reconcile_graph(new_graph, self.current_namespace)
+                self.graph.add_knowledge(new_graph, source_doc="manual_sourcing", page_number=0, namespace=self.current_namespace)
                 return f"O item '{item_name}' foi adicionado à sua lista de desejos técnica."
                 
             return "Ação não reconhecida."

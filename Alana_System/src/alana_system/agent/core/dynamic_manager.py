@@ -5,6 +5,8 @@ import logging
 import inspect
 import ast
 import tempfile
+import re
+from pathlib import Path
 from typing import Dict, Any, List, Tuple
 from ..tools.base_tool import BaseTool
 
@@ -16,12 +18,12 @@ class CodeSecurityGuard:
     """
     # Bibliotecas permitidas para ferramentas de engenharia
     WHITELISTED_IMPORTS = {
-        "math", "numpy", "json", "logging", "datetime", "abc",
-        "typing", "alana_system.agent.tools.base_tool", "asyncio", "scipy", "pandas"
+        "math", "json", "datetime", "abc", "typing",
+        "alana_system.agent.tools.base_tool"
     }
     
     # Funções estritamente proibidas (Auditoria Industrial)
-    BANNED_FUNCTIONS = {"eval", "exec", "open", "getattr", "setattr", "delattr", "input", "__import__", "breakpoint"}
+    BANNED_FUNCTIONS = {"eval", "exec", "open", "getattr", "setattr", "delattr", "input", "__import__", "breakpoint", "compile", "globals", "locals", "vars", "type"}
     BANNED_MODULES = {"os", "subprocess", "shutil", "sys", "socket", "requests", "urllib", "ctypes"}
 
     @classmethod
@@ -55,6 +57,13 @@ class CodeSecurityGuard:
                 if isinstance(node, ast.Call):
                     if isinstance(node.func, ast.Name) and node.func.id in cls.BANNED_FUNCTIONS:
                         return False, f"Chamada de função proibida: {node.func.id}"
+                    if isinstance(node.func, ast.Name) and node.func.id == "range":
+                        if not node.args or any(not isinstance(arg, ast.Constant) or not isinstance(arg.value, int) for arg in node.args):
+                            return False, "range() exige limites inteiros constantes."
+                        values = [arg.value for arg in node.args]
+                        start, stop, step = (0, values[0], 1) if len(values) == 1 else (values[0], values[1], values[2] if len(values) > 2 else 1)
+                        if step == 0 or abs((stop - start) // step) > 100_000:
+                            return False, "range() excede o limite de 100.000 iterações."
                     
                     # Bloqueia chamadas do tipo os.system(...) ou subprocess.run(...) ou Path.open(...)
                     if isinstance(node.func, ast.Attribute):
@@ -70,6 +79,9 @@ class CodeSecurityGuard:
                         if node.attr not in ["__init__", "__name__"]:
                             return False, f"Acesso a atributo interno proibido: {node.attr}"
 
+                if isinstance(node, (ast.While, ast.AsyncFor, ast.AsyncWith)):
+                    return False, "Laços potencialmente não limitados e operações assíncronas não são permitidos em ferramentas dinâmicas."
+
             return True, "Código validado com sucesso."
         except SyntaxError as e:
             return False, f"Erro de sintaxe no código gerado: {str(e)}"
@@ -82,20 +94,33 @@ class DynamicToolManager:
     Garante segurança via AST, persistência atômica e isolamento por namespace.
     """
     def __init__(self, base_path: str = "data/agent/dynamic_tools"):
-        self.base_path = base_path
-        if not os.path.exists(self.base_path):
-            os.makedirs(self.base_path, exist_ok=True)
+        self.base_path = Path(base_path).resolve()
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _validate_name(value: str, label: str) -> None:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", value):
+            raise ValueError(f"{label} inválido.")
 
     def _get_namespace_path(self, namespace: str) -> str:
-        path = os.path.join(self.base_path, namespace)
-        os.makedirs(path, exist_ok=True)
-        return path
+        self._validate_name(namespace, "Namespace")
+        path = (self.base_path / namespace).resolve()
+        if not path.is_relative_to(self.base_path):
+            raise ValueError("Namespace fora do diretório de ferramentas.")
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def save_tool(self, namespace: str, tool_name: str, code: str) -> Tuple[bool, str]:
         """
         Valida e salva o código de uma nova ferramenta de forma atômica.
         Retorna (sucesso, mensagem).
         """
+        try:
+            self._validate_name(tool_name, "Nome da ferramenta")
+            if not isinstance(code, str) or len(code) > 64 * 1024:
+                raise ValueError("Código excede o limite de 64 KB.")
+        except ValueError as exc:
+            return False, str(exc)
         # Validação AST Rigorosa (P1)
         is_safe, msg = CodeSecurityGuard.validate_code(code)
         if not is_safe:
@@ -125,6 +150,10 @@ class DynamicToolManager:
         """
         if from_namespace == "global":
             return False, "A ferramenta já é global."
+        try:
+            self._validate_name(tool_name, "Nome da ferramenta")
+        except ValueError as exc:
+            return False, str(exc)
             
         try:
             source_path = os.path.join(self._get_namespace_path(from_namespace), f"{tool_name}.py")
@@ -146,6 +175,7 @@ class DynamicToolManager:
     def delete_tool(self, namespace: str, tool_name: str) -> bool:
         """Remove uma ferramenta do disco (P4)."""
         try:
+            self._validate_name(tool_name, "Nome da ferramenta")
             file_path = os.path.join(self._get_namespace_path(namespace), f"{tool_name}.py")
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -197,16 +227,32 @@ class DynamicToolManager:
                 tool_name = filename[:-3]
                 try:
                     file_path = os.path.join(ns_path, filename)
+                    is_safe, reason = CodeSecurityGuard.validate_code(Path(file_path).read_text(encoding="utf-8"))
+                    if not is_safe:
+                        logger.warning("Ferramenta dinâmica rejeitada ao carregar %s: %s", filename, reason)
+                        continue
                     spec = importlib.util.spec_from_file_location(tool_name, file_path)
                     if not spec or not spec.loader: continue
                     
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
                     
-                    for name, obj in inspect.getmembers(module):
-                        if inspect.isclass(obj) and issubclass(obj, BaseTool) and obj is not BaseTool:
-                            tools.append(obj())
-                            logger.info(f"🔌 Ferramenta dinâmica carregada: {tool_name}")
+                    candidates = [
+                        obj for _, obj in inspect.getmembers(module, inspect.isclass)
+                        if obj.__module__ == module.__name__ and issubclass(obj, BaseTool) and obj is not BaseTool
+                    ]
+                    if len(candidates) != 1:
+                        logger.warning("Ferramenta %s rejeitada: esperado exatamente uma classe BaseTool própria.", tool_name)
+                        continue
+                    tool = candidates[0]()
+                    if tool.name != tool_name:
+                        logger.warning("Ferramenta %s rejeitada: nome declarado incompatível (%s).", tool_name, tool.name)
+                        continue
+                    if not inspect.iscoroutinefunction(tool.execute):
+                        logger.warning("Ferramenta %s rejeitada: execute() deve ser assíncrono.", tool_name)
+                        continue
+                    tools.append(tool)
+                    logger.info(f"🔌 Ferramenta dinâmica carregada: {tool_name}")
                 except Exception as e:
                     logger.error(f"Erro ao carregar ferramenta '{tool_name}': {e}")
         

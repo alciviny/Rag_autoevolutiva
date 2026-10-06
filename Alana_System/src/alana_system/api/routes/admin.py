@@ -21,7 +21,7 @@ async def health_check(
         "llm": "ok" if llm else "fail",
         "vector_store": "ok" if vector_store else "fail",
         "graph_store": "ok" if graph_store else "fail",
-        "model": llm.model if llm else "N/A"
+        "model": getattr(llm, "default_model", getattr(llm, "local_model", "N/A")) if llm else "N/A"
     }
 
 @router.get("/status")
@@ -117,7 +117,7 @@ async def get_experiences(
     """Retorna o historico de missoes e aprendizados (Timeline)."""
     try:
         # Busca todas as experiencias do namespace (usando busca vazia para listar recentes)
-        experiences = experience_store._keyword_search("", namespace, limit)
+        experiences = experience_store.list_recent(namespace, limit)
         return {"experiences": experiences, "namespace": namespace}
     except Exception as e:
         logger.error(f"Erro ao buscar experiencias: {e}")
@@ -156,6 +156,15 @@ async def get_graph_hubs(
     except Exception as e:
         logger.error(f"Erro ao buscar hubs: {e}")
         return {"hubs": []}
+
+@router.get("/telemetry/data")
+async def get_telemetry_data(
+    namespace: str = Query("global"),
+    limit: int = Query(50, ge=1, le=500),
+    graph_store=Depends(get_graph_store),
+):
+    """Retorna medições de sensores, sem confundi-las com hubs do grafo."""
+    return {"readings": graph_store.get_recent_telemetry(namespace, limit), "namespace": namespace}
 
 @router.get("/graph/files")
 async def get_graph_files(

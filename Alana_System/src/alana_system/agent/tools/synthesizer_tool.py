@@ -31,7 +31,7 @@ class SynthesizeTool(BaseTool):
                 def name(self): return "nome_da_ferramenta"
                 @property
                 def description(self): return "o que ela faz"
-                def execute(self, arg1, arg2):
+                async def execute(self, arg1, arg2):
                     # logica aqui
                     return "resultado"
         """)
@@ -41,18 +41,25 @@ class SynthesizeTool(BaseTool):
         Sintetiza e registra a ferramenta com auditoria de segurança.
         """
         try:
+            if tool_name in self.engine._core_tool_names:
+                return f"FALHA: '{tool_name}' já pertence a uma ferramenta nativa."
             # O DynamicToolManager agora lida com a validação AST e segurança
             success, msg = self.manager.save_tool(self.current_namespace, tool_name, python_code)
             
             if success:
                 # Recarrega as ferramentas do namespace para o registro atual
                 new_tools = self.manager.load_tools_for_namespace(self.current_namespace)
+                registered = False
                 for t in new_tools:
                     if t.name == tool_name:
                         self.engine.registry.register(t)
+                        self.engine._dynamic_tool_names.add(t.name)
                         if hasattr(t, 'set_context'):
                             t.set_context(self.current_namespace)
-                        
+                        registered = True
+                if not registered:
+                    self.manager.delete_tool(self.current_namespace, tool_name)
+                    return f"FALHA: O código foi salvo, mas a ferramenta '{tool_name}' não pôde ser carregada."
                 return f"SUCESSO: Ferramenta '{tool_name}' sintetizada e registrada no namespace '{self.current_namespace}'."
             else:
                 return f"FALHA DE SEGURANÇA/SINTAXE: {msg}. Corrija o código e tente novamente."

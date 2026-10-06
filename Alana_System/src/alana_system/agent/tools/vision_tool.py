@@ -2,8 +2,10 @@
 import os
 import logging
 import asyncio
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 from .base_tool import BaseTool
+from .path_utils import safe_workspace_file
 
 logger = logging.getLogger("alana.agent.tools.vision")
 
@@ -31,10 +33,15 @@ class VisionAnalysisTool(BaseTool):
         
         valid_bytes = []
         for path in paths:
-            if os.path.exists(path):
+            try:
+                _workspace, safe_path = safe_workspace_file(Path("data/uploads"), self.current_namespace, path)
+            except (ValueError, PermissionError):
+                logger.warning("Caminho de imagem fora do upload do namespace: %s", path)
+                continue
+            if safe_path.is_file():
                 def _read(p):
                     with open(p, "rb") as f: return f.read()
-                valid_bytes.append(await asyncio.to_thread(_read, path))
+                valid_bytes.append(await asyncio.to_thread(_read, safe_path))
             else:
                 logger.warning(f"Arquivo não encontrado: {path}")
 

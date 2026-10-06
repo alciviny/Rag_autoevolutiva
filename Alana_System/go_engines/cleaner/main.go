@@ -1,9 +1,9 @@
 package main
 
 import (
+	"alana_system/go_engines/shared"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -30,7 +30,7 @@ func NewTurboCleaner() *TurboCleaner {
 	return &TurboCleaner{
 		whitespaceRegex: regexp.MustCompile(`[ \t]+`),
 		// (.) garante que pegamos qualquer caractere (inclusive acentuados) após a quebra
-		hyphenRegex:     regexp.MustCompile(`-\r?\n(.)`), 
+		hyphenRegex:     regexp.MustCompile(`-\r?\n(.)`),
 		lineBreaksRegex: regexp.MustCompile(`\n{3,}`),
 	}
 }
@@ -38,13 +38,13 @@ func NewTurboCleaner() *TurboCleaner {
 func (c *TurboCleaner) CleanPage(pageNum string, rawText string) CleanedPage {
 	// 1. Une hifenização
 	text := c.hyphenRegex.ReplaceAllString(rawText, "$1")
-	
+
 	// 2. Normaliza espaços
 	text = c.whitespaceRegex.ReplaceAllString(text, " ")
-	
+
 	// 3. Normaliza quebras
 	text = c.lineBreaksRegex.ReplaceAllString(text, "\n\n")
-	
+
 	return CleanedPage{
 		PageNumber: pageNum,
 		Text:       strings.TrimSpace(text),
@@ -53,7 +53,7 @@ func (c *TurboCleaner) CleanPage(pageNum string, rawText string) CleanedPage {
 }
 
 func main() {
-	rawInput, err := io.ReadAll(os.Stdin)
+	rawInput, err := shared.ReadInput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Erro ao ler entrada: %v\n", err)
 		os.Exit(1)
@@ -68,7 +68,7 @@ func main() {
 	cleaner := NewTurboCleaner()
 	var wg sync.WaitGroup
 	results := make([]CleanedPage, len(input.Pages))
-	
+
 	var mu sync.Mutex
 	i := 0
 	for num, text := range input.Pages {
@@ -82,7 +82,7 @@ func main() {
 		}(num, text, i)
 		i++
 	}
-	
+
 	wg.Wait()
 
 	output, _ := json.Marshal(results)

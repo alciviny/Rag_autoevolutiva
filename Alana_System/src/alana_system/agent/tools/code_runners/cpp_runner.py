@@ -2,6 +2,7 @@ import subprocess
 import os
 from pathlib import Path
 from ..base_tool import BaseTool
+from ..path_utils import safe_workspace_file, unsandboxed_code_execution_enabled
 
 class CppRunnerTool(BaseTool):
     name = "cpp_runner"
@@ -11,12 +12,15 @@ class CppRunnerTool(BaseTool):
         self.workspace = Path(workspace_path)
         
     async def execute(self, filename: str) -> str:
+        if not unsandboxed_code_execution_enabled():
+            return "[BLOQUEADO] Execução direta de código está desativada até configurar um worker isolado."
         import asyncio
-        # Define o workspace real (isolado por namespace)
-        workspace = self.workspace / self.current_namespace
-        workspace.mkdir(parents=True, exist_ok=True)
-
-        file_path = workspace / filename
+        try:
+            workspace, file_path = safe_workspace_file(self.workspace, self.current_namespace, filename)
+        except (ValueError, PermissionError) as exc:
+            return f"[BLOQUEIO DE CAMINHO] {exc}"
+        if not file_path.name.endswith((".cpp", ".cc", ".cxx")):
+            return "[ERRO] Esperado um arquivo C++ (.cpp, .cc ou .cxx)."
         if not file_path.exists():
             return f"[ERRO] O arquivo {filename} não existe no sandbox do projeto {self.current_namespace}."
             

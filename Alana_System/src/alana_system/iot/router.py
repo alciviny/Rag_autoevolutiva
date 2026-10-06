@@ -1,10 +1,10 @@
 import logging
 import json
 import asyncio
+import re
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, File, UploadFile, HTTPException, Request, Form, WebSocket, WebSocketDisconnect
 
-from alana_system.iot.vision import VisionProcessor
 from alana_system.iot.voice import VoiceProcessor
 from alana_system.iot.hal import hal
 from alana_system.inference.llm_engine import LLMEngine
@@ -14,7 +14,6 @@ logger = logging.getLogger("alana.iot.router")
 iot_router = APIRouter(prefix="/iot", tags=["IoT Gateway"])
 
 # Instancia leve para visao (usa API externa)
-vision_processor = VisionProcessor()
 
 @iot_router.post("/vision")
 async def process_vision(
@@ -25,24 +24,29 @@ async def process_vision(
     prompt: Optional[str] = Form("Descreva detalhadamente o que você vê nesta imagem.")
 ):
     """Analisa imagem enviada pelo dispositivo (ex: Oculos)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
+        raise HTTPException(status_code=422, detail="Namespace inválido.")
     # Registrar Heartbeat
     hal.register_heartbeat(device_id, "camera")
     
     try:
-        contents = await image.read()
+        contents = await image.read(20 * 1024 * 1024 + 1)
+        if len(contents) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Limite de imagem: 20 MB.")
         logger.info(f"📸 [Vision] Analisando imagem no namespace '{namespace}'")
         
-        description = await vision_processor.analyze_image(contents, prompt=prompt)
+        description = await request.app.state.vision_processor.analyze_image(contents, prompt=prompt)
         
         # Alimenta o Buffer de Percepcao (JARVIS Mode)
-        request.app.state.sensory_manager.update_vision(description, image_bytes=contents, metadata={"location": namespace, "device_id": device_id})
+        request.app.state.sensory_manager.update_vision(description, image_bytes=contents, metadata={"namespace": namespace, "device_id": device_id})
         
         # 4. Auto-Indexacao Espacial (Background Task)
         # Extrai entidades do que foi visto e mapeia para a localizacao (namespace)
         async def auto_index_vision(desc, ns):
             q_engine = request.app.state.query_engine
             graph_data = await q_engine.entity_extractor.extract_graph(f"Visão detectada em {ns}: {desc}")
-            if graph_data.entities:
+            if graph_data.entities or graph_data.relations:
+                await request.app.state.graph_intelligence.reconcile_graph(graph_data, ns)
                 q_engine.graph_store.add_knowledge(
                     graph_data, 
                     source_doc="vision_sensor", 
@@ -67,6 +71,8 @@ async def process_vision(
             "namespace": namespace,
             "description": description
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro em /vision: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -75,8 +81,12 @@ async def process_vision(
 async def iot_stream_endpoint(websocket: WebSocket):
     """Canal bi-direcional para proatividade (Alertas da Alana)."""
     sensory = websocket.app.state.sensory_manager
+    namespace = websocket.query_params.get("namespace", "global")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
+        await websocket.close(code=1008, reason="Namespace inválido")
+        return
     await websocket.accept()
-    sensory.register_stream(websocket)
+    sensory.register_stream(websocket, namespace)
     try:
         while True:
             # Mantém a conexão viva e recebe heartbeats se necessário
@@ -100,14 +110,16 @@ async def process_voice(
     namespace: str = Form("global"),
     device_id: str = Form("default_device")
 ):
-    """
-    Interface sensorial inteligente. Transcreve voz e decide a acao usando IA.
-    """
+    """Transcreve voz e encaminha a intenção ou responde via conversa."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", namespace):
+        raise HTTPException(status_code=422, detail="Namespace inválido.")
     # Registrar Heartbeat
     hal.register_heartbeat(device_id, "wearable_audio")
     
     try:
-        contents = await audio.read()
+        contents = await audio.read(50 * 1024 * 1024 + 1)
+        if len(contents) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Limite de áudio: 50 MB.")
         logger.info(f"🎤 [Voice] Audio recebido ({len(contents)} bytes) no namespace '{namespace}'")
         
         # 1. Transcricao Assincrona
@@ -123,7 +135,7 @@ async def process_voice(
         logger.info(f"🗣️ Transcrito: '{transcription}'")
         
         # Adicionar o resultado ao sensor manager
-        request.app.state.sensory_manager.add_voice_event(transcription, device_id)
+        request.app.state.sensory_manager.add_voice_event(transcription, device_id, namespace)
         
         # 1. Processamento de Intencao (Arquitetura Centralizada)
         intent_res = await request.app.state.intent_manager.process_intent(transcription, namespace)
@@ -156,6 +168,8 @@ async def process_voice(
             "namespace": namespace
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Erro em /voice: {e}")
         raise HTTPException(status_code=500, detail=str(e))

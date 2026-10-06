@@ -28,7 +28,7 @@ class AlertUserTool(BaseTool):
         Executa o broadcast proativo.
         """
         try:
-            await self.sensory.broadcast_alert(message)
+            await self.sensory.broadcast_alert(message, self.current_namespace)
             return f"Alerta enviado com sucesso: '{message}'"
         except Exception as e:
             logger.error(f"Erro ao executar alert_user: {e}")

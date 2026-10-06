@@ -18,10 +18,10 @@ class DeepSearchAgent:
     Orquestra busca web, rastejo profundo, sintese de relatorios e armazenamento em Grafos.
     """
     
-    def __init__(self, llm_engine: LLMEngine, graph_store: GraphStore, entity_extractor: EntityExtractor):
+    def __init__(self, llm_engine: LLMEngine, graph_store: GraphStore, entity_extractor: EntityExtractor, graph_intelligence=None):
         self.llm = llm_engine
         self.searcher = WebSearcher()
-        self.storer = KnowledgeStorer(graph_store, entity_extractor)
+        self.storer = KnowledgeStorer(graph_store, entity_extractor, graph_intelligence)
 
     async def perform_deep_search(self, query: str, namespace: str = "global", use_deep_crawl: bool = False) -> Dict[str, Any]:
         """

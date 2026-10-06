@@ -1,9 +1,27 @@
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union, get_args, get_origin
 import inspect
+from types import UnionType
 from ..tools.base_tool import BaseTool
 
 logger = logging.getLogger("alana.agent.registry")
+
+
+def _json_schema(annotation: Any) -> Dict[str, Any]:
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (Union, UnionType):
+        variants = [_json_schema(arg) for arg in args if arg is not type(None)]
+        return variants[0] if len(variants) == 1 else {"anyOf": variants}
+    if origin is list or annotation is list or annotation is List:
+        return {"type": "array", "items": _json_schema(args[0] if args else str)}
+    if origin is dict or annotation is dict or annotation is Dict:
+        return {"type": "object"}
+    if annotation is int: return {"type": "integer"}
+    if annotation is float: return {"type": "number"}
+    if annotation is bool: return {"type": "boolean"}
+    if annotation is str: return {"type": "string"}
+    return {"type": "string"}
 
 class ToolRegistry:
     """
@@ -50,40 +68,15 @@ class ToolRegistry:
             required = []
             
             for param_name, param in sig.parameters.items():
-                if param_name == "self" or param_name == "kwargs":
+                if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
                     continue
                     
-                # Mapeamento basico de tipos Python -> JSON Schema
-                param_type = "string"
-                if param.annotation == int:
-                    param_type = "integer"
-                elif param.annotation == float:
-                    param_type = "number"
-                elif param.annotation == bool:
-                    param_type = "boolean"
-                elif param.annotation == list or param.annotation == List:
-                    param_type = "array"
-                elif param.annotation == dict or param.annotation == Dict:
-                    param_type = "object"
-                    
-                properties[param_name] = {
-                    "type": param_type,
-                    "description": f"Parametro {param_name}"
-                }
+                properties[param_name] = {**_json_schema(param.annotation), "description": f"Parametro {param_name}"}
                 
                 # Se nao tiver valor default, e obrigatorio
                 if param.default == inspect.Parameter.empty:
                     required.append(param_name)
                     
-            # Caso especial: fallback se a assinatura for apenas **kwargs
-            if not properties and "kwargs" in sig.parameters:
-                properties = {
-                    "args_dict": {
-                        "type": "object",
-                        "description": "Objeto JSON contendo os argumentos."
-                    }
-                }
-            
             # Formato estrito da OpenAI
             function_def = {
                 "name": name,

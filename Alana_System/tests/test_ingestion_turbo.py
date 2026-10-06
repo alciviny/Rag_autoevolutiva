@@ -24,6 +24,7 @@ class TestIngestionTurbo(unittest.IsolatedAsyncioTestCase):
         self.mock_graph = MagicMock()
         self.mock_vector = MagicMock()
         self.mock_intel = MagicMock()
+        self.mock_intel.detect_document_type = AsyncMock(return_value="Tecnologia")
         self.mock_llm = MagicMock()
         self.mock_intel.llm_engine = self.mock_llm
         
@@ -38,6 +39,7 @@ class TestIngestionTurbo(unittest.IsolatedAsyncioTestCase):
         self.mock_extractor.extract_text.return_value = [MagicMock(page_number=1, text="Texto", char_count=5)]
         self.mock_cleaner.clean_pages.return_value = [MagicMock(page_number=1, text="Texto", char_count=5)]
         self.mock_chunker.chunk_pages.return_value = [MagicMock(chunk_id="c1", page_number=1, text="Texto", source_name="test_doc.txt")]
+        self.mock_embedder.embed_chunks.return_value = [MagicMock()]
         
         # Simula resposta JSON da IA
         self.mock_llm.generate_answer = AsyncMock(return_value='{"entities": [{"name": "Alana", "type": "Sistema"}], "relations": []}')
@@ -77,6 +79,22 @@ class TestIngestionTurbo(unittest.IsolatedAsyncioTestCase):
         
         # Nao deve chamar o LLM (generate_answer) se o lote estiver no checkpoint
         self.mock_llm.generate_answer.assert_not_called()
+
+    async def test_unsupported_document_format_is_rejected(self):
+        unsupported = self.test_dir / "opaque.bin"
+        unsupported.write_bytes(b"content")
+        with self.assertRaisesRegex(ValueError, "Formato não suportado"):
+            await self.manager.process_file(str(unsupported), namespace="test_lab")
+        self.mock_extractor.get_file_hash.assert_not_called()
+
+    async def test_textless_document_is_reported_as_failed(self):
+        scanned_pdf = self.test_dir / "scanned.pdf"
+        scanned_pdf.write_bytes(b"fake pdf")
+        self.mock_extractor.extract_text.return_value = []
+        with self.assertRaisesRegex(RuntimeError, "OCR ainda não está configurado"):
+            await self.manager.process_file(str(scanned_pdf), namespace="test_lab")
+        self.mock_graph.update_job_status.assert_called_once()
+        self.assertEqual(self.mock_graph.update_job_status.call_args.args[2], "FAILED")
 
 if __name__ == "__main__":
     unittest.main()

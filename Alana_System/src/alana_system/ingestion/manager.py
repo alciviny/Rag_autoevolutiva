@@ -3,6 +3,8 @@ import os
 import time
 import concurrent.futures
 import asyncio
+import hashlib
+import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -20,6 +22,7 @@ from ..preprocessing.entity_extractor import EntityExtractor
 from ..core.resources import gatekeeper
 
 logger = logging.getLogger("alana.ingestion.manager")
+SUPPORTED_FILE_EXTENSIONS = frozenset({".pdf", ".txt", ".md", ".docx", ".mp3", ".wav", ".m4a"})
 
 class IngestionManager:
     """
@@ -70,18 +73,24 @@ class IngestionManager:
         logger.info(f"📂 Iniciando Ingestao Omni: {len(files)} arquivos no namespace '{namespace}'")
 
         # Processamento sequencial de arquivos para gerenciar VRAM (Ollama/Whisper)
+        failures = []
         for file_path in files:
             try:
                 await self.process_file(str(file_path), namespace, mode)
             except Exception as e:
                 logger.error(f"Falha ao processar {file_path.name}: {e}")
+                failures.append(f"{file_path.name}: {e}")
+        if failures:
+            raise RuntimeError(f"Falha ao processar {len(failures)} de {len(files)} arquivos: " + "; ".join(failures))
 
     async def process_file(self, file_path: str, namespace: str = "global", mode: str = "fast"):
         """Fluxo industrial assíncrono: Hash -> Checkpoint -> Extracao -> IA -> Vetores."""
         path = Path(file_path)
-        file_hash = self.extractor.get_file_hash(path)
-        filename = path.name
         suffix = path.suffix.lower()
+        if suffix not in SUPPORTED_FILE_EXTENSIONS:
+            raise ValueError(f"Formato não suportado: {suffix or '(sem extensão)'}. Suportados: {', '.join(sorted(SUPPORTED_FILE_EXTENSIONS))}.")
+        content_hash = self.extractor.get_file_hash(path)
+        filename = path.name
 
         # Adaptive Batching: Protege a GPU no modo exaustivo
         if mode == "deep":
@@ -89,34 +98,55 @@ class IngestionManager:
         else:
             self.llm_batch_size = 3000
 
+        model_id = getattr(self.intelligence.llm_engine, "default_model", None) or getattr(self.intelligence.llm_engine, "local_model", "unknown")
+        if not isinstance(model_id, str):
+            model_id = "unknown"
+        chunker_max = getattr(self.chunker, "max_chars", None)
+        chunker_overlap = getattr(self.chunker, "overlap_chars", None)
+        chunker_max = chunker_max if isinstance(chunker_max, int) else None
+        chunker_overlap = chunker_overlap if isinstance(chunker_overlap, int) else None
+        checkpoint_fingerprint = hashlib.sha256(json.dumps([
+            content_hash, "ingestion-v3-grounded-page", mode, self.llm_batch_size, self.llm_batch_overlap,
+            model_id, chunker_max, chunker_overlap,
+        ], ensure_ascii=False).encode("utf-8")).hexdigest()
+        file_hash = checkpoint_fingerprint
+
+        # Registra antes da extração para que PDFs sem camada de texto não desapareçam do histórico.
+        self.graph_store.register_ingestion_job(file_hash, filename, 0, namespace)
+
         # 1. Verifica Checkpoint Geral
         processed_batches = self.graph_store.get_processed_batches(file_hash, namespace)
         
         # 2. Extracao de Texto (CPU bound, mas mantemos síncrono por simplicidade ou to_thread)
-        if suffix == ".pdf" or suffix in [".txt", ".md", ".docx"]:
-            # Extracao pode ser pesada, usamos to_thread para nao travar o loop principal
-            raw_pages = await asyncio.to_thread(self.extractor.extract_text, path)
-        elif suffix in [".mp3", ".wav", ".m4a"]:
-            if not self.audio_transcriber:
-                self.audio_transcriber = AudioTranscriber()
-            
-            # Whisper é pesado, usamos o ResourceGatekeeper para proteger a VRAM
-            async with gatekeeper.get_semaphore():
-                raw_pages = await asyncio.to_thread(self.audio_transcriber.transcribe, path)
-        else:
-            return # Formato ignorado
+        try:
+            if suffix in {".pdf", ".txt", ".md", ".docx"}:
+                raw_pages = await asyncio.to_thread(self.extractor.extract_text, path)
+            else:
+                if not self.audio_transcriber:
+                    self.audio_transcriber = AudioTranscriber()
+                async with gatekeeper.get_semaphore():
+                    raw_pages = await asyncio.to_thread(self.audio_transcriber.transcribe, path)
+        except Exception as exc:
+            self.graph_store.update_job_status(file_hash, namespace, "FAILED", str(exc))
+            raise
 
-        if not raw_pages:
-            return
+        if not raw_pages or not any(page.text.strip() for page in raw_pages):
+            message = "Nenhum texto extraível encontrado. Se este PDF for digitalizado, OCR ainda não está configurado."
+            self.graph_store.update_job_status(file_hash, namespace, "FAILED", message)
+            raise RuntimeError(message)
 
-        # Auto-Descoberta de Domínio
-        doc_domain = "Tecnologia e Negócios"
-        if raw_pages and raw_pages[0].text:
-            doc_domain = await self.intelligence.detect_document_type(raw_pages[0].text)
-
-        # 3. Limpeza e Chunking (RAG)
-        cleaned_pages = self.cleaner.clean_pages(raw_pages)
-        chunks = self.chunker.chunk_pages(cleaned_pages, source_name=filename)
+        try:
+            first_text = next(page.text for page in raw_pages if page.text.strip())
+            doc_domain = await self.intelligence.detect_document_type(first_text)
+            cleaned_pages = self.cleaner.clean_pages(raw_pages)
+            if not any(page.text.strip() for page in cleaned_pages):
+                raise RuntimeError("A limpeza removeu todo o texto extraído; documento não indexado.")
+            chunks = self.chunker.chunk_pages(cleaned_pages, source_name=filename)
+            if not chunks:
+                raise RuntimeError(f"Chunker não produziu trechos para {filename}; ingestão interrompida.")
+        except Exception as exc:
+            self.graph_store.update_job_status(file_hash, namespace, "FAILED", str(exc))
+            raise
 
         # 4. Agrupamento Semantico para Extracao via IA (Contexto para Ollama)
         extraction_batches = self._prepare_extraction_batches(cleaned_pages, filename)
@@ -144,32 +174,34 @@ class IngestionManager:
 
         # 6. Indexacao Vetorial (Usa to_thread para o SentenceTransformer CPU/GPU bound)
         logger.info(f"🔢 Gerando Embeddings: {filename}")
-        embedded_chunks = await asyncio.to_thread(self.embedder.embed_chunks, chunks)
-        self.vector_store.upsert_embeddings(embedded_chunks, namespace=namespace)
+        try:
+            embedded_chunks = await asyncio.to_thread(self.embedder.embed_chunks, chunks)
+            if chunks and len(embedded_chunks) != len(chunks):
+                raise RuntimeError(f"Embeddings incompletos: {len(embedded_chunks)}/{len(chunks)}.")
+            self.vector_store.upsert_embeddings(embedded_chunks, namespace=namespace)
+        except Exception as exc:
+            self.graph_store.update_job_status(file_hash, namespace, "FAILED", str(exc))
+            raise
 
         # 7. Finaliza Job com sucesso
         self.graph_store.update_job_status(file_hash, namespace, "COMPLETED")
         logger.info(f"✅ Arquivo finalizado com sucesso: {filename}")
 
     def _prepare_extraction_batches(self, pages: List[Any], filename: str) -> List[tuple]:
-        """Agrupa paginas para otimizar chamadas ao Ollama."""
+        """Divide páginas longas sem misturar páginas, preservando proveniência exata."""
         batches = []
-        current_text = ""
-        current_page = 1
-        
+        max_size = max(1, self.llm_batch_size)
+        overlap_size = min(max(0, self.llm_batch_overlap), max_size - 1)
+
         for p in pages:
-            if len(current_text) + len(p.text) < self.llm_batch_size:
-                current_text += "\n" + p.text
-            else:
-                if current_text:
-                    batches.append((current_text, current_page, len(batches) + 1))
-                
-                context_overlap = current_text[-self.llm_batch_overlap:] if len(current_text) > self.llm_batch_overlap else current_text
-                current_text = context_overlap + "\n" + p.text
-                current_page = p.page_number
-        
-        if current_text:
-            batches.append((current_text, current_page, len(batches) + 1))
+            text = p.text or ""
+            start = 0
+            while start < len(text):
+                end = min(start + max_size, len(text))
+                batches.append((text[start:end], p.page_number, len(batches) + 1))
+                if end == len(text):
+                    break
+                start = end - overlap_size
             
         return batches
 

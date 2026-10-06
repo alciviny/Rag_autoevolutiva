@@ -40,9 +40,10 @@ class GraphIntelligence:
         
         try:
             neighbors = self.bridge.call({
-                "edges": [{"from": e[0], "to": e[1], "type": e[2]} for e in edges],
+                "edges": [{"from": subject, "to": object_name, "type": relation} for subject, relation, object_name in edges],
                 "source": normalized,
-                "mode": "neighbors"
+                "mode": "neighbors",
+                "hops": max(1, min(int(hops), 5)),
             })
             
             if not neighbors:
@@ -60,7 +61,7 @@ class GraphIntelligence:
             logger.warning(f"🚨 Grafo muito grande ({len(edges)} arestas). Busca de caminho pode ser lenta.")
         try:
             path = self.bridge.call({
-                "edges": [{"from": e[0], "to": e[1], "type": e[2]} for e in edges],
+                "edges": [{"from": subject, "to": object_name, "type": relation} for subject, relation, object_name in edges],
                 "source": self.graph_store.normalize_name(source),
                 "target": self.graph_store.normalize_name(target),
                 "mode": "path"
@@ -191,10 +192,12 @@ class GraphIntelligence:
             # Threshold Industrial: 0.92 (ajustado para precisão técnica)
             if best_match["score"] > 0.92 and best_match.get("entity_name"):
                 matched_name = best_match["entity_name"]
-                if matched_name != normalized:
+                if matched_name != normalized and self.graph_store.get_entity(matched_name, namespace):
                     logger.info(f"🔗 Reconciliacao Semantica (Qdrant): '{normalized}' unificado a '{matched_name}' (Score: {best_match['score']:.4f})")
-                    self.graph_store.add_alias(normalized, matched_name)
-                return matched_name
+                    self.graph_store.add_alias(normalized, matched_name, namespace=namespace)
+                    return matched_name
+                if matched_name == normalized:
+                    return matched_name
                 
         # Novo conceito único: Salva no VectorStore (Qdrant)
         self.entity_vector_store.upsert_entities(
@@ -202,6 +205,15 @@ class GraphIntelligence:
             namespace=namespace
         )
         return normalized
+
+    async def reconcile_graph(self, graph, namespace: str = "global"):
+        """Indexa e canonicaliza todas as entidades antes de qualquer gravação no grafo."""
+        for entity in graph.entities or []:
+            entity.name = await self.reconcile_entity(entity.name, namespace)
+        for relation in graph.relations or []:
+            relation.subject = await self.reconcile_entity(relation.subject, namespace)
+            relation.object = await self.reconcile_entity(relation.object, namespace)
+        return graph
 
     async def get_seed_entities(self, query: str, top_k: int = 5, namespace: str = "global") -> List[str]:
         """

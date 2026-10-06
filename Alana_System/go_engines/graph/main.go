@@ -1,9 +1,9 @@
 package main
 
 import (
+	"alana_system/go_engines/shared"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 )
@@ -21,6 +21,31 @@ type GraphInput struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
 	Mode   string `json:"mode"` // "path", "neighbors", "density"
+	Hops   int    `json:"hops"`
+}
+
+// Neighbors retorna os nós alcançáveis em até hops arestas, sem duplicatas.
+func (g *GraphEngine) Neighbors(start string, hops int) []string {
+	if hops < 1 {
+		hops = 1
+	}
+	visited := map[string]bool{start: true}
+	frontier := []string{start}
+	result := make([]string, 0)
+	for depth := 0; depth < hops && len(frontier) > 0; depth++ {
+		next := make([]string, 0)
+		for _, node := range frontier {
+			for _, neighbor := range g.Adjacency[node] {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					result = append(result, neighbor)
+					next = append(next, neighbor)
+				}
+			}
+		}
+		frontier = next
+	}
+	return result
 }
 
 // GraphEngine gerencia a estrutura de adjacência
@@ -71,19 +96,32 @@ func (g *GraphEngine) FindPath(start, end string) []string {
 }
 
 func main() {
-	rawInput, _ := io.ReadAll(os.Stdin)
+	rawInput, err := shared.ReadInput()
+	if err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(1)
+	}
 	var input GraphInput
-	json.Unmarshal(rawInput, &input)
+	if err := json.Unmarshal(rawInput, &input); err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	engine := NewGraphEngine(input.Edges)
-	
+
 	var result interface{}
 
 	switch input.Mode {
 	case "path":
 		result = engine.FindPath(input.Source, input.Target)
 	case "neighbors":
-		result = engine.Adjacency[input.Source]
+		hops := input.Hops
+		if hops < 1 {
+			hops = 1
+		} else if hops > 5 {
+			hops = 5
+		}
+		result = engine.Neighbors(input.Source, hops)
 	case "density":
 		result = len(input.Edges)
 	}

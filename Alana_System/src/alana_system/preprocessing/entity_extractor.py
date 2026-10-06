@@ -40,11 +40,13 @@ class EntitySchema(BaseModel):
     name: str = Field(..., min_length=1)
     type: EntityType
     description: str = Field(default="")
+    evidence: str = Field(default="")
 
 class RelationSchema(BaseModel):
     subject: str
     predicate: str
     object: str
+    evidence: str = Field(default="")
 
 class KnowledgeGraphSchema(BaseModel):
     entities: List[EntitySchema]
@@ -79,6 +81,8 @@ class EntityExtractor:
             )
             
             data = self._safe_json_load(resposta_bruta)
+            if not isinstance(data, dict) or not any(key in data for key in ("entities", "relations")):
+                raise ValueError("Resposta do LLM não contém um objeto de extração válido.")
             
             # 1. Processamento de Entidades (Validação de Esquema)
             valid_entities = []
@@ -129,6 +133,7 @@ class EntityExtractor:
                     
                     # Limpeza de nome (Remove pontuação ou fragmentos de OCR no início/fim)
                     ent.name = self._clean_entity_name(ent.name)
+                    ent.evidence = self._validate_evidence(ent.evidence, text)
                     
                     # FILTRO DE RELEVÂNCIA (Qualidade Industrial)
                     if not ent.name or self._is_trash(ent.name): 
@@ -165,6 +170,7 @@ class EntityExtractor:
                     # Normalização de Nomes nas Relações
                     rel.subject = self._clean_entity_name(rel.subject)
                     rel.object = self._clean_entity_name(rel.object)
+                    rel.evidence = self._validate_evidence(rel.evidence, text)
                     
                     # FILTRO ANTI-NÓS ÓRFÃOS (Integridade do Grafo)
                     if not rel.subject or not rel.object:
@@ -208,11 +214,12 @@ CRITÉRIOS DE EXTRAÇÃO (Qualidade sobre Quantidade):
 REGRAS DE OURO:
 - NOMES CURTOS: O 'name' deve ser o termo técnico exato (ex: "API REST" em vez de "A API REST do sistema").
 - DESCRIÇÕES RICAS: A 'description' deve focar na função do conceito dentro do contexto lido.
+- EVIDÊNCIA: inclua em cada entidade e relação um trecho literal curto do texto que sustente a extração. Nunca invente uma citação; use string vazia se não houver suporte explícito.
 
 FORMATO DE SAÍDA (Apenas JSON puro, sem marcações markdown):
 {{
-  "entities": [{{ "name": "...", "type": "...", "description": "..." }}],
-  "relations": [{{ "subject": "...", "predicate": "...", "object": "..." }}]
+  "entities": [{{ "name": "...", "type": "...", "description": "...", "evidence": "trecho literal" }}],
+  "relations": [{{ "subject": "...", "predicate": "...", "object": "...", "evidence": "trecho literal" }}]
 }}
 """
 
@@ -224,23 +231,21 @@ ATENÇÃO: O DOMÍNIO DESTE DOCUMENTO É: {domain}. Você DEVE adaptar o seu foc
 ONTOLOGIA DE REFERÊNCIA (Use estes ou sugira novos pertinentes ao domínio '{domain}'):
 {", ".join(PREFERRED_TYPES)}
 
-INSTRUÇÕES DE PENSAMENTO (Chain-of-Thought):
-1. Identifique TODOS os substantivos técnicos, ferramentas, frameworks, habilidades (soft e hard skills), experiências, pessoas, locais e conceitos sem exceção.
+CRITÉRIOS DE EXTRAÇÃO:
+1. Identifique conceitos e fatos relevantes para responder perguntas sobre o documento, priorizando informação explícita e útil.
 2. Não ignore nada por parecer 'detalhe'. Detalhes microscópicos são fundamentais na documentação (ex: bibliotecas usadas, metodologias, anos).
 3. Se um termo técnico, habilidade ou experiência existe, ele DEVE virar uma entidade autônoma no JSON.
-4. CONEXÃO MÁXIMA: É ESTRITAMENTE OBRIGATÓRIO que você gere dezenas de relações. Uma entidade solta não tem valor. Conecte ferramentas a projetos, pessoas a cargos, habilidades a experiências. Gere pelo menos 2 a 3 ligações para cada entidade extraída. Use predicados descritivos como 'domina', 'utilizou_em', 'trabalhou_como', 'graduou_se_em', 'requer', 'otimiza'.
+4. Crie somente relações sustentadas diretamente pelo trecho. Não complete lacunas com suposições e não force ligações para entidades isoladas.
 
 REGRAS DE OURO:
-- META DE DENSIDADE: Tente extrair entre 30 a 80 entidades por bloco de texto lido. Force o detalhamento extremo.
-- META DE RELAÇÕES: Extraia entre 40 a 100 relações lógicas. O grafo DEVE ser denso e complexo.
 - NOMES CURTOS: 'name' deve ser o termo exato, curto e capitalizado (ex: "Python", não "Linguagem Python").
 - DESCRIÇÕES RICAS: Explique detalhadamente o contexto de como essa entidade apareceu no texto.
+- EVIDÊNCIA: inclua em cada entidade e relação um trecho literal curto do bloco que sustente a extração. Nunca invente uma citação; use string vazia se não houver suporte explícito.
 
 FORMATO DE SAÍDA (Apenas JSON puro):
 {{
-  "thought": "Breve cadeia de pensamento analisando como vou explodir esse texto em dezenas de conexões...",
-  "entities": [{{ "name": "...", "type": "...", "description": "..." }}],
-  "relations": [{{ "subject": "...", "predicate": "...", "object": "..." }}]
+  "entities": [{{ "name": "...", "type": "...", "description": "...", "evidence": "trecho literal" }}],
+  "relations": [{{ "subject": "...", "predicate": "...", "object": "...", "evidence": "trecho literal" }}]
 }}
 """
 
@@ -255,6 +260,15 @@ FORMATO DE SAÍDA (Apenas JSON puro):
         # Se o nome começar com algo como "1.", "a)", remove
         name = re.sub(r'^(\d+\.|[a-z]\))\s*', '', name, flags=re.IGNORECASE)
         return name.strip()
+
+    @staticmethod
+    def _validate_evidence(evidence: str, source_text: str) -> str:
+        """Retém evidências literais; citações inventadas são descartadas."""
+        if not isinstance(evidence, str) or not evidence.strip():
+            return ""
+        normalize = lambda value: re.sub(r"\s+", " ", value).casefold().strip()
+        quote = normalize(evidence)
+        return evidence.strip() if quote and quote in normalize(source_text) else ""
 
     def _is_useful(self, ent: EntitySchema) -> bool:
         """Verifica se a entidade agregará valor ao conhecimento."""

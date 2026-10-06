@@ -39,32 +39,31 @@ class BinaryBridge:
         if not self.bin_path.exists():
             raise FileNotFoundError(f"Binario {self.bin_path.name} ausente.")
 
-        input_json = json.dumps(input_data)
+        input_json = json.dumps(input_data, ensure_ascii=False)
+        input_bytes = input_json.encode("utf-8")
         temp_file_path = None
         cmd = [str(self.bin_path)]
 
         # Protocolo Industrial: Se > 2MB, usa troca por arquivo (File-Swap)
-        if len(input_json) > 2 * 1024 * 1024:
+        if len(input_bytes) > 2 * 1024 * 1024:
             with tempfile.NamedTemporaryFile('w', delete=False, suffix='.json', encoding='utf-8') as tf:
                 tf.write(input_json)
                 temp_file_path = tf.name
             cmd.extend(["--file", temp_file_path])
-            logger.info(f"💾 Payload massivo detectado ({len(input_json)/1024/1024:.2f}MB). Usando File-Swap.")
+            logger.info(f"💾 Payload massivo detectado ({len(input_bytes)/1024/1024:.2f}MB). Usando File-Swap.")
             input_json = None # Libera RAM imediatamente
 
         try:
-            process = subprocess.Popen(
+            process = subprocess.run(
                 cmd,
-                stdin=subprocess.PIPE if not temp_file_path else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                encoding='utf-8',
-                errors='ignore'
+                input=input_json if not temp_file_path else None,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
             )
-            
-            # Se nao estiver usando arquivo, envia via stdin
-            stdin_content = input_json if not temp_file_path else None
-            stdout, stderr = process.communicate(input=stdin_content)
+            stdout, stderr = process.stdout, process.stderr
             
             if process.returncode != 0:
                 logger.error(f"❌ Falha no motor {self.bin_path.name}: {stderr}")

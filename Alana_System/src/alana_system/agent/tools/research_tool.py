@@ -14,12 +14,10 @@ class ResearchTool(BaseTool):
         # Injeção de Dependência: Recebe o agente já configurado pelo Bridge
         self.agent = deep_search_agent
         
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, query: str) -> str:
         """
         Executa a pesquisa profunda com tolerância a argumentos mal formatados.
         """
-        query = kwargs.get("query") or (next(iter(kwargs.values()), None) if kwargs else None)
-        
         if not query:
             return "[ERRO DE PESQUISA]: Argumento 'query' ausente. DICA: Use {'query': 'sua pergunta aqui'}"
             
@@ -30,7 +28,7 @@ class ResearchTool(BaseTool):
             logger.info(f"🕵️ Alana iniciando pesquisa externa profunda: {query}")
             
             # Execução assíncrona nativa
-            result = await self.agent.perform_deep_search(query)
+            result = await self.agent.perform_deep_search(query, namespace=self.current_namespace)
             
             report = result.get("report", "Nenhum relatório gerado.")
             return f"[PESQUISA EXTERNA CONCLUÍDA]\n\nOBJETIVO: {query}\n\nRELATÓRIO TÉCNICO:\n{report}"

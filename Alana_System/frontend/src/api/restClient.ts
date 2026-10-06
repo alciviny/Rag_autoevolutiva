@@ -1,31 +1,32 @@
 export const fetchTelemetry = async (namespace: string) => {
-    const res = await fetch(`/api/graph/hubs?namespace=${namespace}`);
+    const res = await fetch(`/api/telemetry/data?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch telemetry');
     return res.json();
 };
 
 export const fetchSpatial = async (namespace: string) => {
-    const res = await fetch(`/api/spatial/data?namespace=${namespace}`);
+    const res = await fetch(`/api/spatial/data?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch spatial data');
     return res.json();
 };
 
 export const fetchExperiences = async (namespace: string) => {
-    const res = await fetch(`/api/experiences?namespace=${namespace}`);
+    const res = await fetch(`/api/experiences?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch experiences');
     return res.json();
 };
 
 export const fetchGraphData = async (namespace: string, file?: string) => {
-    let url = `/api/graph/data?namespace=${namespace}`;
-    if (file) url += `&file=${encodeURIComponent(file)}`;
+    const params = new URLSearchParams({ namespace });
+    if (file) params.set('file', file);
+    const url = `/api/graph/data?${params}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error('Failed to fetch graph data');
     return res.json();
 };
 
 export const fetchGraphFiles = async (namespace: string) => {
-    const res = await fetch(`/api/graph/files?namespace=${namespace}`);
+    const res = await fetch(`/api/graph/files?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch graph files');
     return res.json();
 };
@@ -33,7 +34,7 @@ export const fetchGraphFiles = async (namespace: string) => {
 export const uploadIngestionFile = async (file: File, namespace: string, mode: string = "fast"): Promise<any> => {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`/api/ingestion/upload?namespace=${namespace}&mode=${mode}`, {
+    const res = await fetch(`/api/ingestion/upload?${new URLSearchParams({ namespace, mode })}`, {
         method: 'POST',
         body: formData
     });
@@ -47,7 +48,7 @@ export const uploadIngestionFile = async (file: File, namespace: string, mode: s
 export const sendVoiceCommandApi = async (blob: Blob, namespace: string): Promise<any> => {
     const formData = new FormData();
     formData.append('audio', blob, 'command.webm');
-    const res = await fetch(`/api/iot/voice?namespace=${namespace}`, {
+    const res = await fetch(`/api/iot/voice?${new URLSearchParams({ namespace })}`, {
         method: 'POST',
         body: formData
     });
@@ -59,13 +60,13 @@ export const sendVoiceCommandApi = async (blob: Blob, namespace: string): Promis
 };
 
 export const fetchMissions = async (namespace: string) => {
-    const res = await fetch(`/api/missions?namespace=${namespace}`);
+    const res = await fetch(`/api/missions?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch missions');
     return res.json();
 };
 
 export const fetchMissionReport = async (id: string, namespace: string) => {
-    const res = await fetch(`/api/missions/${id}?namespace=${namespace}`);
+    const res = await fetch(`/api/missions/${encodeURIComponent(id)}?${new URLSearchParams({ namespace })}`);
     if (!res.ok) throw new Error('Failed to fetch mission report');
     return res.json();
 };

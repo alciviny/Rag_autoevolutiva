@@ -88,7 +88,8 @@ class AlanaContainer:
         self.engines["deep_search_agent"] = DeepSearchAgent(
             llm_engine=self.engines["llm_engine"],
             graph_store=self.engines["graph_store"],
-            entity_extractor=self.engines["entity_extractor"]
+            entity_extractor=self.engines["entity_extractor"],
+            graph_intelligence=self.engines["graph_intelligence"],
         )
         
         self.engines["orchestrator"] = MultiAgentOrchestrator(
@@ -113,6 +114,7 @@ class AlanaContainer:
         from alana_system.agent.tools.evolution_tool import PromoteTool
         
         orch = self.engines["orchestrator"]
+        self.engines["vision_processor"] = orch.engineer.registry.get_tool("analyze_visual_data").vision
         orch.engineer.registry.register(KnowledgeCatalystTool(intelligence=self.engines["graph_intelligence"]))
         orch.engineer.registry.register(AlertUserTool(sensory_manager=self.engines["sensory_manager"]))
         orch.engineer.registry.register(SpatialLocatorTool(graph_store=self.engines["graph_store"]))

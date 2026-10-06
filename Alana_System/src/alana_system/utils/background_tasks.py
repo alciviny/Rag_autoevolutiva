@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 import time
+import inspect
 from typing import Callable, Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -57,6 +58,13 @@ class BackgroundTaskManager:
         """
         task_id = str(uuid.uuid4())
         task_name = name or coro_func.__name__
+        try:
+            signature = inspect.signature(coro_func)
+            bound = signature.bind_partial(*args, **kwargs)
+            if "namespace" in signature.parameters and "namespace" not in bound.arguments:
+                kwargs["namespace"] = namespace
+        except (TypeError, ValueError):
+            logger.warning("Não foi possível inferir o namespace para a tarefa %s", task_name)
         
         # Captura o contexto do log atual (Trace ID)
         from alana_system.utils.logging_context import get_trace_id

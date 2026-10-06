@@ -1,5 +1,10 @@
 export const getEl = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
+const htmlEscapes: Record<string, string> = {
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+};
+export const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, char => htmlEscapes[char]);
+
 export const appendTerminalLine = (
     terminal: HTMLElement,
     type: string,
@@ -15,7 +20,8 @@ export const appendTerminalLine = (
         line.appendChild(strong);
     }
 
-    let htmlContent = content
+    const safeContent = escapeHtml(content);
+    const htmlContent = safeContent
         .replace(/### (.*)/g, '<h3 class="terminal-header">$1</h3>')
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/^- (.*)/g, '<div class="terminal-list-item">• $1</div>')

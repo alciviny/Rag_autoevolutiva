@@ -2,6 +2,7 @@ import os
 import logging
 from pathlib import Path
 from .base_tool import BaseTool
+from .path_utils import namespace_workspace, safe_workspace_file
 
 logger = logging.getLogger("alana.agent.tools.fs")
 
@@ -20,24 +21,7 @@ class FileSystemTool(BaseTool):
         Implementa proteção contra Path Traversal e Isolamento Industrial.
         """
         # 1. Define o workspace baseado no namespace
-        workspace = self.root / self.current_namespace
-        workspace.mkdir(parents=True, exist_ok=True)
-        
-        # 2. Resolve o caminho final
-        # O uso de .name no final impede subdiretórios se quisermos um sandbox plano,
-        # mas aqui permitiremos subdiretórios SE eles estiverem sob o workspace.
-        target_path = (workspace / filename).resolve()
-        
-        # 3. Validação de Segurança Industrial: O caminho resolvido DEVE estar sob o workspace
-        try:
-            if not target_path.is_relative_to(workspace):
-                logger.warning(f"🚨 TENTATIVA DE VIOLAÇÃO DE SEGURANÇA: {filename} por namespace {self.current_namespace}")
-                raise PermissionError(f"Acesso negado: O caminho '{filename}' está fora do sandbox permitido.")
-        except AttributeError:
-            # Fallback para versoes de Python < 3.9 (Embora Alana use modern stack)
-            if not str(target_path).startswith(str(workspace.absolute())):
-                raise PermissionError(f"Acesso negado: O caminho '{filename}' viola o isolamento.")
-            
+        workspace, target_path = safe_workspace_file(self.root, self.current_namespace, filename)
         return target_path
 
 class WriteCodeTool(FileSystemTool):
@@ -77,8 +61,7 @@ class ListDirTool(FileSystemTool):
     
     async def execute(self) -> str:
         try:
-            workspace = self.root / self.current_namespace
-            workspace.mkdir(parents=True, exist_ok=True)
+            workspace = namespace_workspace(self.root, self.current_namespace)
             
             files = []
             for f in workspace.rglob("*"): # Busca recursiva industrial
